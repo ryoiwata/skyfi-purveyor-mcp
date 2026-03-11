@@ -1,0 +1,134 @@
+flowchart TD
+    subgraph Clients["MCP Clients"]
+        CW["Claude Web"]
+        OAI["OpenAI"]
+        GEM["Gemini"]
+        LC["LangChain / ADK / AI SDK"]
+    end
+
+    subgraph Purveyor["Purveyor MCP Server"]
+        MCP["/mcp — Streamable HTTP Endpoint"]
+
+        subgraph Tools["MCP Tools"]
+            T_SEARCH["search_archives"]
+            T_PRICING["get_pricing"]
+            T_FEAS["check_feasibility"]
+            T_PASS["get_pass_predictions"]
+            T_CREATE_T["create_tasking_order"]
+            T_CREATE_A["create_archive_order"]
+            T_STATUS["get_order_status"]
+            T_LIST["list_orders"]
+            T_DL["download_deliverable"]
+            T_REDEL["request_redelivery"]
+            T_MON["setup_monitoring"]
+            T_NOTIF["list_notifications / delete"]
+            T_GEO["geocode_location"]
+            T_AOI["create_aoi_from_point"]
+            T_AREA["calculate_aoi_area"]
+            T_WHO["whoami"]
+        end
+
+        subgraph Core["Core Services"]
+            AUTH["Auth Provider\n(Local JSON / Cloud Headers)"]
+            CACHE["Tiered Cache\n(Memory → Redis)"]
+            RL["Rate Limiter\n(Inbound / Outbound)"]
+            CLIENT["SkyFi API Client\n(httpx + tenacity)"]
+            CONFIRM["Order Confirmation\nService"]
+        end
+
+        subgraph Webhooks["Webhook Receiver (FastAPI)"]
+            WH_ORDER["POST /webhooks/order-event"]
+            WH_NOTIF["POST /webhooks/archive-notification"]
+        end
+
+        subgraph Storage["Storage Layer"]
+            DB_SQLITE["SQLite + SpatiaLite\n(Local Mode)"]
+            DB_PG["Postgres + PostGIS\n(Cloud Mode)"]
+        end
+
+        CONFIRM_PAGE["GET /confirm/token\nPOST /confirm/token\n(Human Approval Page)"]
+    end
+
+    subgraph External["External Services"]
+        SKYFI["SkyFi Platform API\napp.skyfi.com/platform-api"]
+        OSM["OpenStreetMap\nNominatim + Overpass"]
+    end
+
+    USER(("Human User"))
+
+    %% Client connections
+    CW -->|"JSON-RPC over\nStreamable HTTP"| MCP
+    OAI -->|"JSON-RPC over\nStreamable HTTP"| MCP
+    GEM -->|"JSON-RPC over\nStreamable HTTP"| MCP
+    LC -->|"JSON-RPC over\nStreamable HTTP"| MCP
+
+    %% MCP to Tools
+    MCP --> AUTH
+    AUTH --> Tools
+
+    %% Read tools flow
+    T_SEARCH --> CACHE
+    T_PRICING --> CACHE
+    T_FEAS --> CACHE
+    T_PASS --> CLIENT
+    T_STATUS --> CLIENT
+    T_LIST --> CLIENT
+    T_DL --> CLIENT
+    T_REDEL --> CLIENT
+    T_MON --> CLIENT
+    T_NOTIF --> CLIENT
+    T_WHO --> CACHE
+
+    %% Geo tools
+    T_GEO --> OSM
+    T_AOI -.->|"Shapely + pyproj"| T_AOI
+    T_AREA -.->|"Shapely + pyproj"| T_AREA
+
+    %% Cache to client
+    CACHE -->|"Cache miss"| CLIENT
+    CLIENT --> RL
+    RL --> SKYFI
+
+    %% Order creation flow (the key differentiator)
+    T_CREATE_T --> CONFIRM
+    T_CREATE_A --> CONFIRM
+    CONFIRM -->|"1. Store pending order\n+ generate token"| Storage
+    CONFIRM -->|"2. Return\nconfirmation_url"| MCP
+
+    %% Human confirmation
+    MCP -->|"3. Agent shows URL\nto user"| USER
+    USER -->|"4. Opens URL,\nreviews order"| CONFIRM_PAGE
+    CONFIRM_PAGE -->|"5. Human clicks\nConfirm"| CLIENT
+    CLIENT -->|"6. Place actual\norder"| SKYFI
+
+    %% Webhook flows
+    SKYFI -->|"Order status\nchanges"| WH_ORDER
+    SKYFI -->|"New archive\nmatches AOI"| WH_NOTIF
+    WH_ORDER --> Storage
+    WH_NOTIF --> Storage
+    WH_ORDER -.->|"Notify agent\nvia SSE"| MCP
+    WH_NOTIF -.->|"Notify agent\nvia SSE"| MCP
+
+    %% Storage connections
+    CONFIRM --> DB_SQLITE
+    CONFIRM --> DB_PG
+
+    %% Styling
+    classDef client fill:#e8f4fd,stroke:#2196F3,stroke-width:2px,color:#1565C0
+    classDef tool fill:#e8f5e9,stroke:#4CAF50,stroke-width:1px,color:#2E7D32
+    classDef core fill:#fff3e0,stroke:#FF9800,stroke-width:1px,color:#E65100
+    classDef external fill:#fce4ec,stroke:#E91E63,stroke-width:2px,color:#880E4F
+    classDef storage fill:#f3e5f5,stroke:#9C27B0,stroke-width:1px,color:#6A1B9A
+    classDef human fill:#fffde7,stroke:#FFC107,stroke-width:2px,color:#F57F17
+    classDef webhook fill:#e0f2f1,stroke:#009688,stroke-width:1px,color:#00695C
+    classDef confirm fill:#fff8e1,stroke:#FF6F00,stroke-width:2px,color:#E65100
+
+    class CW,OAI,GEM,LC client
+    class T_SEARCH,T_PRICING,T_FEAS,T_PASS,T_CREATE_T,T_CREATE_A,T_STATUS,T_LIST,T_DL,T_REDEL,T_MON,T_NOTIF,T_GEO,T_AOI,T_AREA,T_WHO tool
+    class AUTH,CACHE,RL,CLIENT,CONFIRM core
+    class SKYFI,OSM external
+    class DB_SQLITE,DB_PG storage
+    class USER human
+    class WH_ORDER,WH_NOTIF webhook
+    class CONFIRM_PAGE confirm
+    class MCP client
