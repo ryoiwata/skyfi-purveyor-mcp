@@ -1,0 +1,164 @@
+---
+# Purveyor Docker Compose
+#
+# Profiles:
+#   minimal  — purveyor + postgres (suitable for single-user self-hosting)
+#   standard — minimal + redis + caddy (adds caching and HTTPS)
+#   full     — standard + grafana + tempo + prometheus (adds observability)
+#
+# Usage:
+#   docker compose --profile minimal up -d
+#   docker compose --profile standard up -d
+#   docker compose --profile full up -d
+
+services:
+  # ─── Core: Purveyor MCP server (memory cache) ─────────────────────────────
+  purveyor:
+    image: purveyor:latest
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile
+    profiles: [minimal]
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://purveyor:${POSTGRES_PASSWORD:-purveyor}@postgres:5432/purveyor"
+      CACHE_BACKEND: memory
+      LOG_FORMAT: json
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SKYFI_API_KEY: ${SKYFI_API_KEY:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      CONFIRMATION_SECRET_KEY: ${CONFIRMATION_SECRET_KEY:-}
+      CONFIRMATION_BASE_URL: ${CONFIRMATION_BASE_URL:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+    volumes:
+      - purveyor_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ─── Core: Purveyor MCP server (Redis cache) ──────────────────────────────
+  purveyor-standard:
+    image: purveyor:latest
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile
+    profiles: [standard, full]
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://purveyor:${POSTGRES_PASSWORD:-purveyor}@postgres:5432/purveyor"
+      REDIS_URL: redis://redis:6379/0
+      CACHE_BACKEND: redis
+      LOG_FORMAT: json
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SKYFI_API_KEY: ${SKYFI_API_KEY:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      CONFIRMATION_SECRET_KEY: ${CONFIRMATION_SECRET_KEY:-}
+      CONFIRMATION_BASE_URL: ${CONFIRMATION_BASE_URL:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+    volumes:
+      - purveyor_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ─── Database: Postgres with PostGIS ──────────────────────────────────────
+  postgres:
+    image: postgis/postgis:16-3.4
+    profiles: [minimal, standard, full]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: purveyor
+      POSTGRES_USER: purveyor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-purveyor}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U purveyor -d purveyor"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ─── Cache: Redis ──────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    profiles: [standard, full]
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ─── Reverse Proxy: Caddy (HTTPS) ─────────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    profiles: [standard, full]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    depends_on:
+      - purveyor-standard
+
+  # ─── Observability: Prometheus ─────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: [full]
+    restart: unless-stopped
+    volumes:
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+
+  # ─── Observability: Tempo (traces) ────────────────────────────────────────
+  tempo:
+    image: grafana/tempo:latest
+    profiles: [full]
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    ports:
+      - "3200:3200"
+
+  # ─── Observability: Grafana ────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    profiles: [full]
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - tempo
+
+volumes:
+  purveyor_data:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+  prometheus_data:
+  grafana_data:

@@ -1,0 +1,22 @@
+# Caddyfile for Purveyor HTTPS termination
+# Set DOMAIN environment variable to your domain name
+
+{$DOMAIN:localhost} {
+    reverse_proxy purveyor:8000 {
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Proto {scheme}
+        # Forward real client IP for rate limiting
+        header_up X-Real-IP {remote_host}
+    }
+
+    # Health check endpoint (no auth required)
+    handle /health {
+        reverse_proxy purveyor:8000
+    }
+
+    # Enable access logging
+    log {
+        output stderr
+        format json
+    }
+}
