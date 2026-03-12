@@ -56,12 +56,19 @@ def serve(local: bool, reload: bool, host: str, port: int, transport: str) -> No
 
 
 @main.command()
-@click.option("--provider", default="anthropic", help="LLM provider")
-@click.option("--workflow", type=click.Choice(["research", "monitor", "order"]), default=None)
-@click.option("--query", default=None, help="Workflow query")
+@click.option("--provider", default="anthropic", help="LLM provider (default: anthropic)")
+@click.option(
+    "--workflow",
+    type=click.Choice(["research", "monitor", "order"]),
+    default=None,
+    help="Run a pre-built workflow",
+)
+@click.option("--query", default=None, help="Query for workflow mode")
 def demo(provider: str, workflow: str | None, query: str | None) -> None:
     """Run the interactive demo agent (stdio MCP transport)."""
-    click.echo("Demo agent not yet implemented (Phase 5)")
+    from purveyor.demo.agent import run_demo
+
+    run_demo(workflow=workflow, query=query)
 
 
 @main.command("generate-key")
