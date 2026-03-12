@@ -1,11 +1,10 @@
-"""Order management MCP tools (read-only operations for Phase 2).
-
-Write operations (create_tasking_order, create_archive_order, cancel_pending_order)
-are implemented in Phase 3.
-"""
+"""Order management MCP tools: list, status, download, create, cancel."""
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import uuid
 from typing import Any
 
 import structlog
@@ -239,5 +238,498 @@ def register(mcp: FastMCP) -> None:
             "summary": (
                 f"Signed download URL for {deliverable_type} of order {order_id}. "
                 "URL expires - download promptly."
+            ),
+        }
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=False,
+        )
+    )
+    async def create_tasking_order(
+        location: str,
+        product_type: str,
+        resolution: str,
+        window_start: str,
+        window_end: str,
+        ctx: McpContext,
+        delivery_driver: str = "NONE",
+        delivery_params: dict[str, Any] | None = None,
+        max_cloud_cover: float | None = None,
+        max_off_nadir: float | None = None,
+        provider: str | None = None,
+        provider_window_id: str | None = None,
+        priority: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Create a tasking order request. Returns a confirmation URL for human review.
+
+        Does NOT place an order directly. Returns a confirmation URL that the user
+        must open to review details and approve.
+
+        Args:
+            location: Place name or WKT polygon defining the area of interest.
+            product_type: Imagery product type (DAY, SAR, MULTISPECTRAL, etc.).
+            resolution: Resolution tier (LOW, MEDIUM, HIGH, VERY HIGH, SUPER HIGH, etc.).
+            window_start: Capture window start (ISO 8601 datetime string).
+            window_end: Capture window end (ISO 8601 datetime string).
+            delivery_driver: Delivery destination (NONE, S3, GS, AZURE, etc.).
+            delivery_params: Delivery credentials dict for the chosen driver.
+            max_cloud_cover: Maximum cloud coverage percent (0-100).
+            max_off_nadir: Maximum off-nadir angle in degrees.
+            provider: Specific satellite provider to use.
+            provider_window_id: Provider-specific window ID from pass predictions.
+            priority: Whether to mark as a priority item.
+            metadata: Optional metadata dict to attach to the order.
+        """
+        log.info("tool_create_tasking_order", location=location[:50], product_type=product_type)
+        lc: dict[str, Any] = ctx.request_context.lifespan_context
+        cached_client = lc["cached_client"]
+        settings = lc["settings"]
+        session_factory = lc["session_factory"]
+        cache = lc["cache"]
+
+        from purveyor.core.confirmation import (
+            create_confirmation,
+            encrypt_confirmation_token,
+        )
+        from purveyor.core.skyfi_types import (
+            AzureDeliveryParams,
+            DeliveryDriver,
+            GCSDeliveryParams,
+            PricingRequest,
+            S3DeliveryParams,
+            TaskingOrderRequest,
+        )
+        from purveyor.tools.geospatial import resolve_location
+
+        # Validate delivery params if a driver is specified
+        if delivery_driver and delivery_driver != "NONE" and delivery_params:
+            try:
+                if delivery_driver == "S3":
+                    S3DeliveryParams.model_validate(delivery_params)
+                elif delivery_driver in ("GS", "GS_SERVICE_ACCOUNT"):
+                    GCSDeliveryParams.model_validate(delivery_params)
+                elif delivery_driver in ("AZURE", "AZURE_SERVICE_ACCOUNT"):
+                    AzureDeliveryParams.model_validate(delivery_params)
+            except Exception as exc:
+                return ToolError(
+                    code=ErrorCode.INVALID_INPUT,
+                    message=f"Invalid delivery_params for driver {delivery_driver}: {exc}",
+                ).to_call_tool_result()
+
+        # Resolve location to WKT
+        try:
+            wkt, _ = await resolve_location(
+                location,
+                geocoding_base_url=settings.geocoding_base_url,
+                cache=cache,
+            )
+        except ToolError as e:
+            return e.to_call_tool_result()
+
+        # Calculate AOI area
+        try:
+            from shapely import wkt as shapely_wkt
+
+            polygon = await asyncio.to_thread(shapely_wkt.loads, wkt)
+            from purveyor.tools.geospatial import _calculate_area_sq_km
+
+            aoi_area_sq_km = await asyncio.to_thread(_calculate_area_sq_km, polygon)
+        except Exception:
+            aoi_area_sq_km = 0.0
+
+        # Estimate cost via pricing API
+        estimated_cost_cents = 0
+        price_per_sq_km = 0.0
+        try:
+            pricing_resp = await cached_client.get_pricing(PricingRequest(aoi=wkt))
+            if isinstance(pricing_resp, dict):
+                # Attempt to extract price for the given product_type/resolution
+                for _key, entry in pricing_resp.items():
+                    if isinstance(entry, dict):
+                        pt = entry.get("productType") or entry.get("product_type", "")
+                        res = entry.get("resolution", "")
+                        pt_match = str(pt).upper() == product_type.upper()
+                        res_match = str(res).upper() == resolution.upper()
+                        if pt_match and res_match:
+                            ppm = entry.get("priceForOneSquareKmCents") or entry.get(
+                                "price_for_one_square_km_cents", 0
+                            )
+                            price_per_sq_km = float(ppm) / 100.0
+                            break
+            if price_per_sq_km > 0 and aoi_area_sq_km > 0:
+                estimated_cost_cents = int(price_per_sq_km * aoi_area_sq_km * 100)
+        except Exception as exc:
+            log.warning("pricing_estimate_failed", error=str(exc))
+
+        # Parse window dates for the request
+        from datetime import datetime
+
+        try:
+            ws = datetime.fromisoformat(window_start)
+            we = datetime.fromisoformat(window_end)
+        except ValueError as exc:
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Invalid window date format: {exc}",
+            ).to_call_tool_result()
+
+        # Build order request dict for the encrypted token payload
+        driver_enum = DeliveryDriver.NONE
+        try:
+            driver_enum = DeliveryDriver(delivery_driver.upper())
+        except ValueError:
+            pass
+
+        order_request = TaskingOrderRequest(
+            aoi=wkt,
+            window_start=ws,
+            window_end=we,
+            product_type=product_type,  # type: ignore[arg-type]
+            resolution=resolution,
+            delivery_driver=driver_enum,
+            delivery_params=delivery_params,
+            priority_item=priority,
+            max_cloud_coverage_percent=(
+                int(max_cloud_cover) if max_cloud_cover is not None else None
+            ),
+            max_off_nadir_angle=(
+                int(max_off_nadir) if max_off_nadir is not None else None
+            ),
+            required_provider=provider,  # type: ignore[arg-type]
+            provider_window_id=uuid.UUID(provider_window_id) if provider_window_id else None,
+            metadata=metadata,
+        )
+
+        # Build payload for Fernet token
+        api_key = settings.skyfi_api_key or ""
+        # NOTE: In cloud mode, the per-request API key should come from the request
+        # auth context. For now, local mode uses settings.skyfi_api_key.
+        token_payload = {
+            "api_key": api_key,
+            "order_type": "TASKING",
+            "order_params": order_request.model_dump(by_alias=True, mode="json"),
+            "estimated_cost_cents": estimated_cost_cents,
+            "aoi_area_sq_km": round(aoi_area_sq_km, 2),
+            "price_per_sq_km": price_per_sq_km,
+        }
+
+        token = encrypt_confirmation_token(token_payload, settings.fernet_key)
+
+        # Compute api_key_hash for DB routing
+        api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+
+        # Persist confirmation record
+        async with session_factory() as session:
+            record = await create_confirmation(
+                session, token, "TASKING", api_key_hash, estimated_cost_cents
+            )
+
+        # Build confirmation URL
+        base = (settings.confirmation_base_url or f"http://localhost:{settings.server_port}").rstrip("/")
+        confirmation_url = f"{base}/confirm/{token}"
+
+        cost_str = f"${estimated_cost_cents / 100:.2f}"
+        area_str = f"{aoi_area_sq_km:.1f} sq km" if aoi_area_sq_km else "unknown area"
+
+        summary = (
+            f"Tasking order for {product_type} / {resolution} over {area_str}. "
+            f"Estimated cost: {cost_str}. "
+            f"Window: {ws.date()} to {we.date()}. "
+            "Share the confirmation URL with the user for review and approval."
+        )
+
+        log.info(
+            "tasking_order_confirmation_created",
+            confirmation_id=str(record.id),
+            estimated_cost_cents=estimated_cost_cents,
+        )
+
+        return {
+            "confirmation_url": confirmation_url,
+            "confirmation_id": str(record.id),
+            "estimated_cost_cents": estimated_cost_cents,
+            "estimated_cost_dollars": cost_str,
+            "order_summary": summary,
+            "IMPORTANT": (
+                "Please share this URL with the user and ask them to review and confirm the order."
+            ),
+        }
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=False,
+        )
+    )
+    async def create_archive_order(
+        aoi: str,
+        archive_id: str,
+        ctx: McpContext,
+        delivery_driver: str = "NONE",
+        delivery_params: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Create an archive order request. Returns a confirmation URL for human review.
+
+        Does NOT place an order directly. Returns a confirmation URL that the user
+        must open to review details and approve.
+
+        Args:
+            aoi: WKT polygon defining the area to order (subset of archive footprint).
+            archive_id: The archive ID returned by search_archives.
+            delivery_driver: Delivery destination (NONE, S3, GS, AZURE, etc.).
+            delivery_params: Delivery credentials dict for the chosen driver.
+            metadata: Optional metadata dict to attach to the order.
+        """
+        log.info("tool_create_archive_order", archive_id=archive_id)
+        lc: dict[str, Any] = ctx.request_context.lifespan_context
+        cached_client = lc["cached_client"]
+        settings = lc["settings"]
+        session_factory = lc["session_factory"]
+
+        from purveyor.core.confirmation import (
+            create_confirmation,
+            encrypt_confirmation_token,
+        )
+        from purveyor.core.skyfi_types import (
+            ArchiveOrderRequest,
+            AzureDeliveryParams,
+            DeliveryDriver,
+            GCSDeliveryParams,
+            S3DeliveryParams,
+        )
+
+        # Validate delivery params
+        if delivery_driver and delivery_driver != "NONE" and delivery_params:
+            try:
+                if delivery_driver == "S3":
+                    S3DeliveryParams.model_validate(delivery_params)
+                elif delivery_driver in ("GS", "GS_SERVICE_ACCOUNT"):
+                    GCSDeliveryParams.model_validate(delivery_params)
+                elif delivery_driver in ("AZURE", "AZURE_SERVICE_ACCOUNT"):
+                    AzureDeliveryParams.model_validate(delivery_params)
+            except Exception as exc:
+                return ToolError(
+                    code=ErrorCode.INVALID_INPUT,
+                    message=f"Invalid delivery_params for driver {delivery_driver}: {exc}",
+                ).to_call_tool_result()
+
+        # Fetch archive metadata for pricing
+        try:
+            archive = await cached_client.get_archive(archive_id)
+        except Exception as exc:
+            log.error("get_archive_error", archive_id=archive_id, error=str(exc))
+            return ToolError(
+                code=ErrorCode.SKYFI_UNAVAILABLE,
+                message=f"Failed to fetch archive {archive_id}: {exc}",
+            ).to_call_tool_result()
+
+        # Calculate AOI area
+        aoi_area_sq_km = 0.0
+        try:
+            from shapely import wkt as shapely_wkt
+
+            polygon = await asyncio.to_thread(shapely_wkt.loads, aoi)
+            from purveyor.tools.geospatial import _calculate_area_sq_km
+
+            aoi_area_sq_km = await asyncio.to_thread(_calculate_area_sq_km, polygon)
+        except Exception as area_exc:
+            log.warning("archive_area_calc_failed", error=str(area_exc))
+
+        # Estimate cost from archive pricing
+        price_per_sq_km_cents = getattr(archive, "price_for_one_square_km_cents", 0) or 0
+        estimated_cost_cents = int(price_per_sq_km_cents * aoi_area_sq_km)
+
+        driver_enum = DeliveryDriver.NONE
+        try:
+            driver_enum = DeliveryDriver(delivery_driver.upper())
+        except ValueError:
+            pass
+
+        order_request = ArchiveOrderRequest(
+            aoi=aoi,
+            archive_id=archive_id,
+            delivery_driver=driver_enum,
+            delivery_params=delivery_params,
+            metadata=metadata,
+        )
+
+        api_key = settings.skyfi_api_key or ""
+        token_payload = {
+            "api_key": api_key,
+            "order_type": "ARCHIVE",
+            "order_params": order_request.model_dump(by_alias=True, mode="json"),
+            "estimated_cost_cents": estimated_cost_cents,
+            "aoi_area_sq_km": round(aoi_area_sq_km, 2),
+            "price_per_sq_km": price_per_sq_km_cents / 100.0,
+        }
+
+        token = encrypt_confirmation_token(token_payload, settings.fernet_key)
+        api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+
+        async with session_factory() as session:
+            record = await create_confirmation(
+                session, token, "ARCHIVE", api_key_hash, estimated_cost_cents
+            )
+
+        base = (settings.confirmation_base_url or f"http://localhost:{settings.server_port}").rstrip("/")
+        confirmation_url = f"{base}/confirm/{token}"
+
+        cost_str = f"${estimated_cost_cents / 100:.2f}"
+        provider = getattr(archive, "provider", "unknown")
+        resolution = getattr(archive, "resolution", "unknown")
+
+        summary = (
+            f"Archive order for {provider} / {resolution} scene. "
+            f"AOI: {aoi_area_sq_km:.1f} sq km. Estimated cost: {cost_str}. "
+            "Share the confirmation URL with the user for review and approval."
+        )
+
+        log.info(
+            "archive_order_confirmation_created",
+            confirmation_id=str(record.id),
+            estimated_cost_cents=estimated_cost_cents,
+        )
+
+        return {
+            "confirmation_url": confirmation_url,
+            "confirmation_id": str(record.id),
+            "estimated_cost_cents": estimated_cost_cents,
+            "estimated_cost_dollars": cost_str,
+            "order_summary": summary,
+            "IMPORTANT": (
+                "Please share this URL with the user and ask them to review and confirm the order."
+            ),
+        }
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+        )
+    )
+    async def cancel_pending_order(
+        confirmation_id: str,
+        ctx: McpContext,
+    ) -> Any:
+        """Cancel a pending order confirmation before it is confirmed by the user.
+
+        Only works on orders that have not yet been confirmed (status='pending').
+        Once confirmed and placed with SkyFi, cancellation is not possible via this tool.
+
+        Args:
+            confirmation_id: The confirmation ID returned by create_tasking_order
+                             or create_archive_order.
+        """
+        log.info("tool_cancel_pending_order", confirmation_id=confirmation_id)
+        lc: dict[str, Any] = ctx.request_context.lifespan_context
+        session_factory = lc["session_factory"]
+
+        from purveyor.core.confirmation import cancel_confirmation
+
+        try:
+            cid = uuid.UUID(confirmation_id)
+        except ValueError:
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Invalid confirmation_id format: '{confirmation_id}'. Expected a UUID.",
+            ).to_call_tool_result()
+
+        try:
+            async with session_factory() as session:
+                msg = await cancel_confirmation(session, cid)
+        except ToolError as e:
+            return e.to_call_tool_result()
+
+        return {
+            "confirmation_id": confirmation_id,
+            "status": "cancelled",
+            "message": msg,
+            "summary": (
+                f"Order confirmation {confirmation_id} has been cancelled. No charge will occur."
+            ),
+        }
+
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+        )
+    )
+    async def request_redelivery(
+        order_id: str,
+        delivery_driver: str,
+        delivery_params: dict[str, Any],
+        ctx: McpContext,
+    ) -> Any:
+        """Request redelivery of a completed order to a new destination.
+
+        Args:
+            order_id: The order UUID to redeliver.
+            delivery_driver: Delivery destination driver (S3, GS, AZURE, etc.).
+            delivery_params: Delivery credentials dict for the chosen driver.
+        """
+        log.info("tool_request_redelivery", order_id=order_id, delivery_driver=delivery_driver)
+        lc: dict[str, Any] = ctx.request_context.lifespan_context
+        cached_client = lc["cached_client"]
+
+        from purveyor.core.skyfi_types import (
+            AzureDeliveryParams,
+            DeliveryDriver,
+            GCSDeliveryParams,
+            OrderRedeliveryRequest,
+            S3DeliveryParams,
+        )
+
+        # Validate delivery params
+        try:
+            if delivery_driver == "S3":
+                S3DeliveryParams.model_validate(delivery_params)
+            elif delivery_driver in ("GS", "GS_SERVICE_ACCOUNT"):
+                GCSDeliveryParams.model_validate(delivery_params)
+            elif delivery_driver in ("AZURE", "AZURE_SERVICE_ACCOUNT"):
+                AzureDeliveryParams.model_validate(delivery_params)
+        except Exception as exc:
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Invalid delivery_params for driver {delivery_driver}: {exc}",
+            ).to_call_tool_result()
+
+        try:
+            driver_enum = DeliveryDriver(delivery_driver.upper())
+        except ValueError:
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Invalid delivery_driver '{delivery_driver}'.",
+            ).to_call_tool_result()
+
+        redelivery_request = OrderRedeliveryRequest(
+            delivery_driver=driver_enum,
+            delivery_params=delivery_params,
+        )
+
+        try:
+            resp = await cached_client.request_redelivery(order_id, redelivery_request)
+        except Exception as exc:
+            log.error("request_redelivery_error", order_id=order_id, error=str(exc))
+            return ToolError(
+                code=ErrorCode.SKYFI_UNAVAILABLE,
+                message=f"Failed to request redelivery for order {order_id}: {exc}",
+            ).to_call_tool_result()
+
+        status = getattr(resp, "status", "redelivery_requested")
+        return {
+            "order_id": order_id,
+            "redelivery_status": status,
+            "summary": (
+                f"Redelivery requested for order {order_id} to {delivery_driver}. "
+                f"Status: {status}."
             ),
         }

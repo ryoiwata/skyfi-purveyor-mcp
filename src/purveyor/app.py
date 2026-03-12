@@ -3,23 +3,47 @@
 from __future__ import annotations
 
 import datetime
+import secrets
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
 
 log = structlog.get_logger(__name__)
+
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """FastAPI lifespan: init DB and expose session_factory on app.state."""
     log.info("fastapi_startup")
+
+    # Access settings stored on app.state by create_app
+    settings: Any = app.state.settings
+
+    from purveyor.models.database import create_engine, create_session_factory, init_db
+
+    engine = create_engine(settings.database_url)
+    session_factory = create_session_factory(engine)
+    await init_db(engine)
+    app.state.session_factory = session_factory
+    # Flag: use SKIP LOCKED only for Postgres
+    app.state.use_skip_locked = "postgresql" in settings.database_url
+    # Shared secret for webhook endpoint authentication
+    app.state.webhook_secret = secrets.token_urlsafe(32)
+
     yield
+
+    await engine.dispose()
     log.info("fastapi_shutdown")
 
 
@@ -44,6 +68,9 @@ def create_app(settings: Any | None = None) -> FastAPI:
         lifespan=_lifespan,
     )
 
+    # Store settings on app.state so _lifespan can access it
+    app.state.settings = settings
+
     # CORS — default allow-all, configurable via ALLOWED_ORIGINS
     origins = settings.allowed_origins_list
     app.add_middleware(
@@ -57,6 +84,10 @@ def create_app(settings: Any | None = None) -> FastAPI:
     # Mount MCP server at /mcp
     from purveyor.server import mcp
     app.mount("/mcp", mcp.streamable_http_app())
+
+    # Webhook routes (real implementation — Task 3.3)
+    from purveyor.webhooks.receiver import router as webhook_router
+    app.include_router(webhook_router)
 
     @app.get("/health")
     async def health() -> JSONResponse:
@@ -107,15 +138,285 @@ def create_app(settings: Any | None = None) -> FastAPI:
         """Kubernetes readiness probe."""
         return JSONResponse(content={"status": "ready"})
 
-    # Webhook stubs (real implementation in Phase 3)
-    @app.post("/webhooks/order-event")
-    async def webhook_order_event() -> JSONResponse:
-        """Stub — order event webhook receiver (Phase 3)."""
-        return JSONResponse(content={"status": "received"})
+    # ------------------------------------------------------------------
+    # Confirmation page routes
+    # ------------------------------------------------------------------
 
-    @app.post("/webhooks/archive-notification")
-    async def webhook_archive_notification() -> JSONResponse:
-        """Stub — archive notification webhook receiver (Phase 3)."""
-        return JSONResponse(content={"status": "received"})
+    @app.get("/confirm/{token}", response_class=HTMLResponse)
+    async def get_confirmation_page(request: Request, token: str) -> HTMLResponse:
+        """Render the order confirmation page for a given Fernet token.
+
+        Decrypts the token to extract order details, then looks up the
+        confirmation record in the DB to determine the current state.
+        """
+        from purveyor.core.confirmation import (
+            decrypt_confirmation_token,
+            get_confirmation_by_token,
+        )
+        from purveyor.core.errors import ToolError
+
+        cur_settings: Any = request.app.state.settings
+        session_factory = request.app.state.session_factory
+
+        async with session_factory() as session:
+            record = await get_confirmation_by_token(session, token)
+
+        # Token not in DB at all
+        if record is None:
+            return templates.TemplateResponse(
+                request,
+                "confirm.html",
+                {
+                    "state": "expired",
+                    "error_message": "This order link is invalid or has expired.",
+                },
+                status_code=410,
+            )
+
+        # Map DB status to template state
+        if record.status == "placed":
+            return templates.TemplateResponse(
+                request,
+                "confirm.html",
+                {
+                    "state": "already_used",
+                    "already_used_action": "confirmed and placed",
+                    "skyfi_order_id": str(record.skyfi_order_id) if record.skyfi_order_id else None,
+                },
+                status_code=409,
+            )
+        if record.status == "cancelled":
+            return templates.TemplateResponse(
+                request,
+                "confirm.html",
+                {
+                    "state": "already_used",
+                    "already_used_action": "cancelled",
+                },
+                status_code=409,
+            )
+        if record.status == "expired":
+            return templates.TemplateResponse(
+                request,
+                "confirm.html",
+                {"state": "expired"},
+                status_code=410,
+            )
+
+        # Status is "pending" — decrypt token to render order details
+        try:
+            payload = decrypt_confirmation_token(token, cur_settings.fernet_key)
+        except ToolError:
+            # Token is cryptographically expired or invalid
+            async with session_factory() as session:
+                rec = await get_confirmation_by_token(session, token)
+                if rec is not None and rec.status == "pending":
+                    rec.status = "expired"
+                    await session.commit()
+            return templates.TemplateResponse(
+                request,
+                "confirm.html",
+                {"state": "expired"},
+                status_code=410,
+            )
+
+        order_type: str = payload.get("order_type", record.order_type)
+        order_params: dict[str, Any] = payload.get("order_params", {})
+        estimated_cost_cents: int = payload.get(
+            "estimated_cost_cents", record.estimated_cost_cents or 0
+        )
+
+        estimated_cost_dollars = f"${estimated_cost_cents / 100:,.2f}"
+
+        # Build cost breakdown and location description from order_params
+        location_description = _extract_location_description(order_params)
+        cost_breakdown = _build_cost_breakdown(order_params, estimated_cost_cents)
+
+        product_type: str | None = order_params.get("productType") or order_params.get(
+            "product_type"
+        )
+        resolution: str | None = order_params.get("resolution")
+
+        expires_at_str = record.expires_at.strftime("%Y-%m-%d %H:%M UTC")
+
+        return templates.TemplateResponse(
+            request,
+            "confirm.html",
+            {
+                "state": "pending",
+                "order_type": order_type,
+                "location_description": location_description,
+                "product_type": product_type,
+                "resolution": resolution,
+                "estimated_cost_dollars": estimated_cost_dollars,
+                "cost_breakdown": cost_breakdown,
+                "expires_at_utc": f"This link expires at {expires_at_str}",
+                "skyfi_order_id": None,
+                "error_message": None,
+            },
+        )
+
+    @app.post("/confirm/{token}", response_class=HTMLResponse)
+    async def post_confirmation_action(
+        request: Request,
+        token: str,
+        action: str = Form(...),
+    ) -> HTMLResponse:
+        """Handle confirm or cancel POST from the confirmation page form.
+
+        The form sends `action=confirm` or `action=cancel`.
+        """
+        from purveyor.core.confirmation import cancel_confirmation, confirm_order
+        from purveyor.core.errors import ErrorCode, ToolError
+
+        cur_settings: Any = request.app.state.settings
+        session_factory = request.app.state.session_factory
+        use_skip_locked: bool = request.app.state.use_skip_locked
+
+        if action == "cancel":
+            from purveyor.core.confirmation import get_confirmation_by_token
+
+            async with session_factory() as session:
+                record = await get_confirmation_by_token(session, token)
+                if record is None:
+                    return templates.TemplateResponse(
+                        request,
+                        "confirm.html",
+                        {"state": "expired"},
+                        status_code=410,
+                    )
+                try:
+                    await cancel_confirmation(session, record.id)
+                except ToolError as exc:
+                    if exc.code == ErrorCode.ORDER_ALREADY_PLACED:
+                        return templates.TemplateResponse(
+                            request,
+                            "confirm.html",
+                            {
+                                "state": "already_used",
+                                "already_used_action": "confirmed and placed",
+                                "skyfi_order_id": str(record.skyfi_order_id)
+                                if record.skyfi_order_id
+                                else None,
+                            },
+                            status_code=409,
+                        )
+                    return templates.TemplateResponse(
+                        request,
+                        "confirm.html",
+                        {"state": "error", "error_message": exc.message},
+                        status_code=400,
+                    )
+
+            return templates.TemplateResponse(
+                request,
+                "confirm.html",
+                {"state": "cancelled"},
+            )
+
+        # action == "confirm"
+        async with session_factory() as session:
+            try:
+                record, order_response = await confirm_order(
+                    session=session,
+                    token=token,
+                    fernet_key=cur_settings.fernet_key,
+                    use_skip_locked=use_skip_locked,
+                )
+            except ToolError as exc:
+                if exc.code in (ErrorCode.ORDER_EXPIRED,):
+                    return templates.TemplateResponse(
+                        request,
+                        "confirm.html",
+                        {"state": "expired"},
+                        status_code=410,
+                    )
+                if exc.code == ErrorCode.ORDER_ALREADY_PLACED:
+                    return templates.TemplateResponse(
+                        request,
+                        "confirm.html",
+                        {
+                            "state": "already_used",
+                            "already_used_action": "confirmed and placed",
+                        },
+                        status_code=409,
+                    )
+                if exc.code == ErrorCode.ORDER_ALREADY_CANCELLED:
+                    return templates.TemplateResponse(
+                        request,
+                        "confirm.html",
+                        {
+                            "state": "already_used",
+                            "already_used_action": "cancelled",
+                        },
+                        status_code=409,
+                    )
+                return templates.TemplateResponse(
+                    request,
+                    "confirm.html",
+                    {"state": "error", "error_message": exc.message},
+                    status_code=502,
+                )
+
+        return templates.TemplateResponse(
+            request,
+            "confirm.html",
+            {
+                "state": "confirmed",
+                "skyfi_order_id": str(order_response.id),
+            },
+        )
 
     return app
+
+
+# ------------------------------------------------------------------
+# Private helpers for template rendering
+# ------------------------------------------------------------------
+
+
+def _extract_location_description(order_params: dict[str, Any]) -> str:
+    """Extract a human-readable location description from order parameters.
+
+    Args:
+        order_params: Decrypted order_params dict from the confirmation token.
+
+    Returns:
+        A short location description string for display.
+    """
+    # Try common field names used in tasking/archive orders
+    for key in ("locationDescription", "location_description", "location", "aoi_description"):
+        val: Any = order_params.get(key)
+        if val and isinstance(val, str):
+            return str(val)
+
+    # Fall back to a truncated WKT if available
+    aoi: Any = order_params.get("aoi") or order_params.get("geometry")
+    if aoi and isinstance(aoi, str):
+        aoi_str: str = str(aoi)
+        return aoi_str[:80] + ("..." if len(aoi_str) > 80 else "")
+
+    return "Custom AOI"
+
+
+def _build_cost_breakdown(order_params: dict[str, Any], estimated_cost_cents: int) -> str:
+    """Build a short cost breakdown string for the confirmation page.
+
+    Args:
+        order_params: Decrypted order_params dict from the confirmation token.
+        estimated_cost_cents: Estimated cost in integer cents.
+
+    Returns:
+        A short cost breakdown string, e.g. "25 sq km x $17/sq km = $425.00".
+    """
+    area = order_params.get("aoi_area_sq_km") or order_params.get("area_sq_km")
+    price_per_sq_km = order_params.get("price_per_sq_km")
+
+    if area and price_per_sq_km:
+        total = estimated_cost_cents / 100
+        return f"{area:.1f} sq km x ${price_per_sq_km:.2f}/sq km = ${total:,.2f}"
+
+    if estimated_cost_cents:
+        return f"Estimated total: ${estimated_cost_cents / 100:,.2f}"
+
+    return "Cost determined at order placement"

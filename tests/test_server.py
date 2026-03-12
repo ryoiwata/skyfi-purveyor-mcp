@@ -112,27 +112,25 @@ def test_health_keys_present() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Webhook stubs
+# Webhook endpoints (real implementation)
 # ---------------------------------------------------------------------------
 
 
-def test_webhook_order_event_stub() -> None:
-    """Webhook stub returns 200 received."""
+def test_webhook_order_event_requires_token() -> None:
+    """Webhook order-event without token returns 401."""
     from purveyor.app import create_app
 
     app = create_app()
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post("/webhooks/order-event", json={"event": "test"})
-        assert response.status_code == 200
-        assert response.json()["status"] == "received"
+        assert response.status_code == 401
 
 
-def test_webhook_archive_notification_stub() -> None:
-    """Archive notification stub returns 200 received."""
+def test_webhook_archive_notification_requires_token() -> None:
+    """Webhook archive-notification without token returns 401."""
     from purveyor.app import create_app
 
     app = create_app()
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post("/webhooks/archive-notification", json={"archiveId": "x"})
-        assert response.status_code == 200
-        assert response.json()["status"] == "received"
+        assert response.status_code == 401
