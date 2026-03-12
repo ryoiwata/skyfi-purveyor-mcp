@@ -89,6 +89,7 @@ select = ["E", "F", "W", "I", "N", "UP", "ANN", "S", "B", "A", "C4", "PT", "RUF"
 ignore = [
     "S101",    # Use of assert (ok in tests)
     "S104",    # Binding to all interfaces (intentional for --host default)
+    "ANN401",  # Dynamically typed expressions (Any) — needed for duck-typed cache/auth interfaces and __aexit__
 ]
 
 [tool.ruff.lint.per-file-ignores]

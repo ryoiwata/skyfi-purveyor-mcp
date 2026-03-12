@@ -26,7 +26,7 @@ _SENSITIVE_FIELDS = frozenset(
 
 
 def _scrub_sensitive_fields(
-    logger: Any,  # noqa: ANN401
+    logger: Any,
     method: str,
     event_dict: structlog.types.EventDict,
 ) -> structlog.types.EventDict:
