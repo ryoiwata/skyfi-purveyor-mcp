@@ -139,11 +139,11 @@ def _create_aoi_from_point_sync(lat: float, lon: float, area_sq_km: float) -> tu
 def _calculate_aoi_area_sync(aoi_wkt: str) -> dict[str, Any]:
     """Parse WKT and calculate area + validate limits."""
     from shapely import wkt as shapely_wkt
-    from shapely.errors import WKTReadingError
+    from shapely.errors import ShapelyError
 
     try:
         polygon = shapely_wkt.loads(aoi_wkt)
-    except (WKTReadingError, Exception) as exc:
+    except (ShapelyError, Exception) as exc:
         return {
             "area_sq_km": 0.0,
             "vertex_count": 0,
