@@ -1,0 +1,30 @@
+# Required: GCP project ID
+project_id = "your-gcp-project-id"
+
+# Required: Domain name for the Purveyor service
+domain = "purveyor.example.com"
+
+# GCP region
+region = "us-central1"
+
+# Docker image to deploy
+image_repository = "ghcr.io/your-org/purveyor"
+image_tag        = "v1.0.0"
+
+# Database tier
+db_tier = "db-f1-micro"
+
+# Enable Redis for caching (recommended for production)
+enable_redis = false
+
+# Cloud Run scaling
+min_instances    = 0
+max_instances    = 10
+container_memory = "512Mi"
+container_cpu    = "1"
+
+# Labels
+labels = {
+  environment = "production"
+  team        = "platform"
+}
