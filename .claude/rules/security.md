@@ -142,3 +142,9 @@ Until SkyFi implements webhook signatures, Purveyor uses defense in depth:
 - Business errors: `isError=true` with structured `{code, message, detail}` in content.
 - Infrastructure errors: JSON-RPC error codes (-32603 for internal, -32601 for method not found).
 - Log the full error internally with request context. Return only the safe code and message to the client.
+
+## Git Hygiene for Security Files
+
+- **After any change to security-sensitive code** (auth, confirmation flow, webhook validation, credential handling, rate limiting), commit immediately with a clear message: `feat(core): <description>` or `fix(core): <description>`.
+- Never leave security-related changes uncommitted while working on other tasks — security changes get their own commits.
+- Before committing, verify no secrets were accidentally added: `git diff --cached | grep -iE "(api_key|secret|password|token)" | grep -v "test\|mock\|example\|hash"` — review any matches.

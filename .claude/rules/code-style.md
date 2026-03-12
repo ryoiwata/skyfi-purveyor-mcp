@@ -104,3 +104,4 @@
 - Use fixtures for common setup: `skyfi_client`, `cached_client`, `db_session`, `auth_provider`.
 - Coverage target: >80% line coverage.
 - Never create real orders or notifications in automated tests against the live SkyFi API.
+- **After adding or fixing tests, always commit:** `test(<scope>): <description>` — do not leave test changes uncommitted.
