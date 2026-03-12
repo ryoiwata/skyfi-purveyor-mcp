@@ -9,6 +9,16 @@
         "--oas=./docs/openapi.json"
       ],
       "env": {}
+    },
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/home/riwata/Documents/projects/ai_engineering/gauntlet-curriculum/partner/week_4/skyfi-purveyor-mcp"
+      ],
+      "env": {}
     }
   }
 }
