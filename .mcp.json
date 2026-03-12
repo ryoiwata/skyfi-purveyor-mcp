@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "apidog": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "apidog-mcp-server@latest",
+        "--oas=./docs/openapi.json"
+      ],
+      "env": {}
+    }
+  }
+}
