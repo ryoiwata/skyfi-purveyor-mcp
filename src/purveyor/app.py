@@ -15,6 +15,9 @@ from fastapi import FastAPI, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
+from starlette.types import ASGIApp
 
 log = structlog.get_logger(__name__)
 
@@ -22,13 +25,81 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Sliding-window rate limiting middleware.
+
+    Applies tiered limits per SPEC §6.1:
+    - /webhooks/*: 100/min per source IP
+    - POST /confirm/*: 5/hour per API key
+    - All other: 60/min per API key (reads dominate MCP traffic)
+
+    Adds X-RateLimit-* headers to every response.
+    Returns 429 with Retry-After when a limit is exceeded.
+    """
+
+    def __init__(self, app: ASGIApp, rate_limiter: Any) -> None:
+        super().__init__(app)
+        self._rl = rate_limiter
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        from purveyor.core.rate_limiter import resolve_rate_limit_key
+
+        key, limit, window = resolve_rate_limit_key(request)
+        result = await self._rl.check_rate_limit(key, limit, window)
+
+        if not result.allowed:
+            log.info(
+                "rate_limit_exceeded",
+                path=request.url.path,
+                key_prefix=key[:20],
+            )
+            return JSONResponse(
+                content={
+                    "error": "rate_limited",
+                    "message": "Too many requests. Please slow down.",
+                    "retry_after": result.retry_after,
+                },
+                status_code=429,
+                headers={
+                    "Retry-After": str(int(result.retry_after or 1)),
+                    "X-RateLimit-Limit": str(limit),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(int(result.reset_at)),
+                },
+            )
+
+        inner: Response = await call_next(request)
+        inner.headers["X-RateLimit-Limit"] = str(limit)
+        inner.headers["X-RateLimit-Remaining"] = str(result.remaining)
+        inner.headers["X-RateLimit-Reset"] = str(int(result.reset_at))
+        return inner
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """FastAPI lifespan: init DB and expose session_factory on app.state."""
+    """FastAPI lifespan: init DB, rate limiter, Sentry, and expose state."""
     log.info("fastapi_startup")
 
     # Access settings stored on app.state by create_app
     settings: Any = app.state.settings
+
+    # --- Sentry integration (Task 4.2) ---
+    if settings.sentry_dsn:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.starlette import StarletteIntegration
+
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            traces_sample_rate=0.1,
+            integrations=[
+                StarletteIntegration(),
+                FastApiIntegration(),
+            ],
+            # Exclude rate-limit responses and business errors from Sentry
+            before_send=_sentry_before_send,  # type: ignore[arg-type]
+        )
+        log.info("sentry_initialized")
 
     from purveyor.models.database import create_engine, create_session_factory, init_db
 
@@ -41,10 +112,51 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shared secret for webhook endpoint authentication
     app.state.webhook_secret = secrets.token_urlsafe(32)
 
+    # Start rate limiter sweep (MemoryRateLimiter only)
+    rate_limiter = app.state.rate_limiter
+    if hasattr(rate_limiter, "start_sweep"):
+        rate_limiter.start_sweep()
+
+    # Signal that the server is fully ready
+    app.state.ready = True
+    log.info("fastapi_startup_complete")
+
     yield
 
+    # Cleanup
+    app.state.ready = False
+    await rate_limiter.close()
     await engine.dispose()
     log.info("fastapi_shutdown")
+
+
+def _sentry_before_send(
+    event: dict[str, Any], hint: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Filter Sentry events to exclude expected business errors and 429s.
+
+    Args:
+        event: Sentry event dict.
+        hint: Hint dict containing the original exception.
+
+    Returns:
+        The event to send, or None to discard it.
+    """
+    from purveyor.core.errors import ToolError
+
+    exc_info = hint.get("exc_info")
+    if exc_info:
+        exc = exc_info[1]
+        if isinstance(exc, ToolError):
+            # Business errors are expected — don't send to Sentry
+            return None
+
+    # Discard 429 responses
+    status_code = event.get("extra", {}).get("status_code")
+    if status_code == 429:
+        return None
+
+    return event
 
 
 def create_app(settings: Any | None = None) -> FastAPI:
@@ -55,6 +167,7 @@ def create_app(settings: Any | None = None) -> FastAPI:
     """
     from purveyor.core.config import load_settings
     from purveyor.core.logging import setup_logging
+    from purveyor.core.rate_limiter import get_rate_limiter
 
     if settings is None:
         settings = load_settings()
@@ -68,8 +181,14 @@ def create_app(settings: Any | None = None) -> FastAPI:
         lifespan=_lifespan,
     )
 
-    # Store settings on app.state so _lifespan can access it
+    # Store settings and rate limiter on app.state so _lifespan can access them
     app.state.settings = settings
+    app.state.ready = False
+    rate_limiter = get_rate_limiter(settings)
+    app.state.rate_limiter = rate_limiter
+
+    # Rate limiting middleware (applied before CORS so headers are always present)
+    app.add_middleware(RateLimitMiddleware, rate_limiter=rate_limiter)
 
     # CORS — default allow-all, configurable via ALLOWED_ORIGINS
     origins = settings.allowed_origins_list
@@ -83,14 +202,16 @@ def create_app(settings: Any | None = None) -> FastAPI:
 
     # Mount MCP server at /mcp
     from purveyor.server import mcp
+
     app.mount("/mcp", mcp.streamable_http_app())
 
     # Webhook routes (real implementation — Task 3.3)
     from purveyor.webhooks.receiver import router as webhook_router
+
     app.include_router(webhook_router)
 
     @app.get("/health")
-    async def health() -> JSONResponse:
+    async def health(request: Request) -> JSONResponse:
         """Health check: reports DB, SkyFi API, and Redis status."""
         start = time.monotonic()
         result: dict[str, Any] = {
@@ -100,6 +221,23 @@ def create_app(settings: Any | None = None) -> FastAPI:
             "redis": "skipped",
         }
         status_code = 200
+
+        # Database connectivity check
+        session_factory = getattr(request.app.state, "session_factory", None)
+        if session_factory is not None:
+            try:
+                from sqlalchemy import text
+
+                async with session_factory() as session:
+                    await session.execute(text("SELECT 1"))
+            except Exception as exc:
+                log.warning("health_database_unreachable", error=str(exc))
+                result["database"] = f"error: {type(exc).__name__}"
+                result["status"] = "degraded"
+                status_code = 503
+        else:
+            # Session factory not yet initialized (before lifespan completes)
+            result["database"] = "initializing"
 
         # Check SkyFi API reachability
         try:
@@ -112,10 +250,11 @@ def create_app(settings: Any | None = None) -> FastAPI:
         except Exception as exc:
             log.warning("health_skyfi_unreachable", error=str(exc))
             result["skyfi_api"] = f"error: {type(exc).__name__}"
-            result["status"] = "degraded"
+            if result["status"] == "healthy":
+                result["status"] = "degraded"
             status_code = 503
 
-        # Redis check
+        # Redis check (degraded but not 503 — caching is optional)
         if settings.redis_url:
             try:
                 import redis.asyncio as aioredis
@@ -127,16 +266,22 @@ def create_app(settings: Any | None = None) -> FastAPI:
             except Exception as exc:
                 log.warning("health_redis_unreachable", error=str(exc))
                 result["redis"] = f"error: {type(exc).__name__}"
+                # Redis being down is degraded but not fatal (caching optional)
+                if result["status"] == "healthy":
+                    result["status"] = "degraded"
 
         result["duration_ms"] = round((time.monotonic() - start) * 1000)
-        result["timestamp"] = datetime.datetime.utcnow().isoformat() + "Z"
+        result["timestamp"] = datetime.datetime.now(datetime.UTC).isoformat()
 
         return JSONResponse(content=result, status_code=status_code)
 
     @app.get("/ready")
-    async def ready() -> JSONResponse:
-        """Kubernetes readiness probe."""
-        return JSONResponse(content={"status": "ready"})
+    async def ready(request: Request) -> JSONResponse:
+        """Kubernetes readiness probe — returns 200 only after full startup."""
+        is_ready: bool = getattr(request.app.state, "ready", False)
+        if is_ready:
+            return JSONResponse(content={"status": "ready"})
+        return JSONResponse(content={"status": "starting"}, status_code=503)
 
     # ------------------------------------------------------------------
     # Confirmation page routes

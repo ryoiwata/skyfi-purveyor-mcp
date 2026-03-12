@@ -71,16 +71,16 @@ def test_tool_count_at_least_16() -> None:
 
 
 def test_ready_endpoint() -> None:
-    """/ready returns 200 immediately."""
+    """/ready returns 200 after lifespan startup completes."""
     from purveyor.app import create_app
 
     app = create_app()
-    client = TestClient(app, raise_server_exceptions=False)
-    # /ready should not need SkyFi connectivity
-    response = client.get("/ready")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "ready"
+    # Use context manager so lifespan runs, setting app.state.ready = True
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/ready")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ready"
 
 
 def test_health_endpoint_structure() -> None:
