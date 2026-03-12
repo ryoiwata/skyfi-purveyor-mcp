@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -11,8 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from purveyor.models.database import create_engine, create_session_factory, init_db
 from purveyor.models.tables import (
-    BackgroundTask,
-    GeocodeCache,
     NotificationRegistry,
     OrderConfirmation,
     WebhookEvent,
@@ -85,7 +83,7 @@ class TestOrderConfirmationCRUD:
 
     async def test_create_order_confirmation(self, session: AsyncSession) -> None:
         """Create and retrieve an OrderConfirmation record."""
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         expires = now + timedelta(minutes=30)
 
         record = OrderConfirmation(
@@ -106,7 +104,7 @@ class TestOrderConfirmationCRUD:
 
     async def test_update_order_status(self, session: AsyncSession) -> None:
         """Update an OrderConfirmation status to placed."""
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         record = OrderConfirmation(
             token_hash="c" * 64,
             status="pending",

@@ -266,6 +266,39 @@ docs: add claude web integration guide
 
 One logical unit of work = one commit. Don't batch unrelated changes. Don't commit half-finished features.
 
+### Auto-Commit Behavior
+
+**After every meaningful change, Claude Code MUST `git add` all relevant files and `git commit` with a conventional commit message.** Do not wait for the user to ask. Do not accumulate uncommitted changes across multiple tasks.
+
+A "meaningful change" is any of:
+- A new file or module created
+- A bug fix applied
+- A test added or fixed
+- A configuration change
+- A documentation update
+- A refactor that touches multiple files
+
+**Commit workflow:**
+1. Complete the logical unit of work
+2. Run `uv run ruff check src/ tests/` and `uv run mypy src/` — fix any issues before committing
+3. Run relevant tests (`uv run pytest <test_file> -v`) — do not commit failing tests
+4. `git add` all changed files related to this unit of work (use `git add -A` only if all changes are related; otherwise add specific files)
+5. `git commit -m "<type>(<scope>): <description>"` using the conventional commit format above
+6. If the commit message needs a body (breaking changes, non-obvious decisions), use:
+   ```bash
+   git commit -m "<type>(<scope>): <description>" -m "<body explaining why>"
+   ```
+
+**Do NOT commit:**
+- Files that should be gitignored (`.env`, `*.db`, `__pycache__/`, `.mypy_cache/`)
+- Failing tests or code that doesn't pass mypy/ruff
+- Unrelated changes bundled into one commit
+- Temporary debug code or print statements
+
+**When fixing a bug or lint error during a task:**
+- If the fix is trivial (import order, unused variable), include it in the current task's commit
+- If the fix is substantive (logic change, new test), make it a separate commit: `fix(<scope>): <description>`
+
 ## Rules
 
 - Read `docs/DESIGN_DECISIONS.md` before modifying the confirmation flow, webhook handling, or error model

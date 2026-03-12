@@ -9,7 +9,6 @@ import pytest
 
 from purveyor.core.cache import CachedSkyFiClient, MemoryCacheBackend, _make_cache_key
 
-
 # ---------------------------------------------------------------------------
 # MemoryCacheBackend
 # ---------------------------------------------------------------------------
@@ -140,8 +139,9 @@ def _make_cached_client(
 @pytest.mark.asyncio
 async def test_whoami_cached_on_second_call() -> None:
     """whoami caches the result and skips the underlying call on second hit."""
-    from purveyor.core.skyfi_types import WhoamiUser
     import uuid
+
+    from purveyor.core.skyfi_types import WhoamiUser
 
     whoami_data = WhoamiUser(
         id=uuid.uuid4(),
@@ -190,8 +190,9 @@ async def test_search_archives_cached() -> None:
 @pytest.mark.asyncio
 async def test_cache_miss_calls_underlying_client() -> None:
     """On cache miss, the underlying client is called."""
-    from purveyor.core.skyfi_types import WhoamiUser
     import uuid
+
+    from purveyor.core.skyfi_types import WhoamiUser
 
     whoami_data = WhoamiUser(
         id=uuid.uuid4(),
@@ -220,17 +221,6 @@ async def test_cache_miss_calls_underlying_client() -> None:
 @pytest.mark.asyncio
 async def test_create_tasking_order_invalidates_archive_cache() -> None:
     """Creating a tasking order clears the archives cache."""
-    from purveyor.core.skyfi_types import (
-        GetArchivesRequest,
-        GetArchivesResponse,
-        TaskingOrderRequest,
-        TaskingOrderResponse,
-        ProductType,
-        DeliveryStatus,
-        OrderType,
-    )
-    from datetime import datetime, timezone
-    import uuid
 
     cache = MemoryCacheBackend()
     # Pre-seed the archives cache
