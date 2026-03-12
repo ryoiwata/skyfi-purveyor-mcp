@@ -19,11 +19,40 @@ def main() -> None:
     "--transport",
     default="streamable-http",
     type=click.Choice(["streamable-http", "stdio"]),
+    show_default=True,
+    help="Transport: streamable-http (default) or stdio",
 )
 def serve(local: bool, reload: bool, host: str, port: int, transport: str) -> None:
     """Run the Purveyor MCP server."""
-    click.echo(f"Starting Purveyor (transport={transport}, local={local})")
-    # Stub — full implementation in Phase 2
+    import os
+
+    if local:
+        os.environ.setdefault("LOCAL_MODE", "true")
+        os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///purveyor.db")
+
+    click.echo(
+        f"Starting Purveyor (transport={transport}, local={local}, host={host}, port={port})"
+    )
+
+    if transport == "stdio":
+        import asyncio
+
+        from purveyor.server import mcp
+
+        asyncio.run(mcp.run_stdio_async())
+    else:
+        import uvicorn
+
+        from purveyor.app import create_app
+
+        app = create_app()
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            reload=reload,
+            log_level="info",
+        )
 
 
 @main.command()
@@ -32,8 +61,7 @@ def serve(local: bool, reload: bool, host: str, port: int, transport: str) -> No
 @click.option("--query", default=None, help="Workflow query")
 def demo(provider: str, workflow: str | None, query: str | None) -> None:
     """Run the interactive demo agent (stdio MCP transport)."""
-    click.echo("Starting Purveyor demo agent...")
-    # Stub — full implementation in Phase 5
+    click.echo("Demo agent not yet implemented (Phase 5)")
 
 
 @main.command("generate-key")

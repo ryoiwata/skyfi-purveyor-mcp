@@ -1,5 +1,90 @@
-"""MCP server setup — Streamable HTTP transport entry point."""
+"""MCP server setup — Streamable HTTP and stdio transports."""
 
 from __future__ import annotations
 
-# Stub — implemented in Phase 2
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+
+import structlog
+from mcp.server.fastmcp import FastMCP
+
+from purveyor import __version__
+from purveyor.core.cache import CachedSkyFiClient, get_cache_backend
+from purveyor.core.config import load_settings
+from purveyor.core.logging import setup_logging
+from purveyor.core.skyfi_client import SkyFiClient
+from purveyor.models.database import create_engine, create_session_factory, init_db
+
+log = structlog.get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+    """Startup and shutdown lifecycle for the MCP server.
+
+    Yields a dict with keys:
+      - settings: Settings instance
+      - cached_client: CachedSkyFiClient
+      - cache: CacheBackend (raw, for geocoding cache)
+      - session_factory: async session factory
+    """
+    settings = load_settings()
+    setup_logging(log_level=settings.log_level, log_format=settings.log_format)
+    log.info("purveyor_starting", version=__version__, local_mode=settings.local_mode)
+
+    # Database
+    engine = create_engine(settings.database_url)
+    session_factory = create_session_factory(engine)
+    await init_db(engine)
+
+    # SkyFi client + cache
+    api_key = settings.skyfi_api_key or ""
+    cache = get_cache_backend(settings)
+    client = SkyFiClient(api_key=api_key)
+    cached_client = CachedSkyFiClient(client, cache)
+
+    log.info("purveyor_ready")
+
+    try:
+        yield {
+            "settings": settings,
+            "cached_client": cached_client,
+            "cache": cache,
+            "session_factory": session_factory,
+        }
+    finally:
+        log.info("purveyor_shutting_down")
+        await client.close()
+        await engine.dispose()
+
+
+# Create the MCP server instance
+mcp = FastMCP(
+    "purveyor",
+    lifespan=lifespan,
+)
+
+
+def _register_all() -> None:
+    """Import and register all tools and resources onto the MCP server."""
+    from purveyor.resources.skyfi_resources import register as register_resources
+    from purveyor.tools.account import register as register_account
+    from purveyor.tools.archives import register as register_archives
+    from purveyor.tools.feasibility import register as register_feasibility
+    from purveyor.tools.geospatial import register as register_geospatial
+    from purveyor.tools.notifications import register as register_notifications
+    from purveyor.tools.orders import register as register_orders
+    from purveyor.tools.pricing import register as register_pricing
+
+    register_geospatial(mcp)
+    register_archives(mcp)
+    register_pricing(mcp)
+    register_feasibility(mcp)
+    register_orders(mcp)
+    register_account(mcp)
+    register_notifications(mcp)
+    register_resources(mcp)
+
+
+_register_all()

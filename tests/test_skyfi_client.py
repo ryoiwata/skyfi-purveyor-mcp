@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -21,7 +20,6 @@ from purveyor.core.skyfi_types import (
     PassPredictionRequest,
     PricingRequest,
     ProductType,
-    Resolution,
     TaskingOrderRequest,
 )
 
@@ -304,8 +302,8 @@ async def test_create_feasibility_task(client: SkyFiClient) -> None:
             aoi="POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
             product_type=ProductType.DAY,
             resolution="VERY HIGH",
-            start_date=datetime(2024, 2, 1, tzinfo=timezone.utc),
-            end_date=datetime(2024, 2, 28, tzinfo=timezone.utc),
+            start_date=datetime(2024, 2, 1, tzinfo=UTC),
+            end_date=datetime(2024, 2, 28, tzinfo=UTC),
         )
         result = await client.create_feasibility_task(req)
         assert str(result.id) == FEASIBILITY_ID
@@ -361,8 +359,8 @@ async def test_get_pass_predictions(client: SkyFiClient) -> None:
         )
         req = PassPredictionRequest(
             aoi="POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
-            from_date=datetime(2024, 2, 1, tzinfo=timezone.utc),
-            to_date=datetime(2024, 2, 28, tzinfo=timezone.utc),
+            from_date=datetime(2024, 2, 1, tzinfo=UTC),
+            to_date=datetime(2024, 2, 28, tzinfo=UTC),
         )
         result = await client.get_pass_predictions(req)
         assert len(result.passes) == 1
@@ -383,8 +381,8 @@ async def test_create_tasking_order(client: SkyFiClient) -> None:
         )
         req = TaskingOrderRequest(
             aoi="POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
-            window_start=datetime(2024, 2, 1, tzinfo=timezone.utc),
-            window_end=datetime(2024, 2, 28, tzinfo=timezone.utc),
+            window_start=datetime(2024, 2, 1, tzinfo=UTC),
+            window_end=datetime(2024, 2, 28, tzinfo=UTC),
             product_type=ProductType.DAY,
             resolution="VERY HIGH",
         )
