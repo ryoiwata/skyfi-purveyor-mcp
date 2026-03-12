@@ -102,7 +102,17 @@ markers = [
     "live: marks tests as requiring real SkyFi API (deselect with '-m not live')",
 ]
 
+[tool.coverage.run]
+# Python 3.12 sys.monitoring-based tracer — required for accurate async coverage
+# (classic tracer misses lines inside async context managers)
+core = "sysmon"
+
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true
 warn_required_dynamic_aliases = true
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.0.0",
+]
