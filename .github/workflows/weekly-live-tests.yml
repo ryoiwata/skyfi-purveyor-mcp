@@ -1,0 +1,138 @@
+name: Weekly Live Tests & API Drift Check
+
+on:
+  schedule:
+    # Every Sunday at 2:00 AM UTC
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      skip_live_tests:
+        description: "Skip live API tests (only run drift check)"
+        required: false
+        default: "false"
+
+jobs:
+  live-tests:
+    name: Live SkyFi API Tests
+    runs-on: ubuntu-latest
+    if: github.event.inputs.skip_live_tests != 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Install dependencies
+        run: uv sync
+      - name: Run live tests
+        env:
+          SKYFI_TEST_API_KEY: ${{ secrets.SKYFI_TEST_API_KEY }}
+        run: |
+          if [ -z "$SKYFI_TEST_API_KEY" ]; then
+            echo "SKYFI_TEST_API_KEY secret not set — skipping live tests"
+            exit 0
+          fi
+          uv run pytest -m live -v --tb=short
+      - name: Report results
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: "⚠️ Weekly live test failure",
+              body: "Live SkyFi API tests failed. Check the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.",
+              labels: ["bug", "api-drift"],
+            })
+
+  api-drift-check:
+    name: SkyFi OpenAPI Drift Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch live OpenAPI spec
+        run: |
+          curl -s https://app.skyfi.com/platform-api/openapi.json \
+            -o /tmp/live-openapi.json \
+            --fail \
+            --max-time 30 \
+            || (echo "Failed to fetch live spec" && exit 0)
+      - name: Compare with pinned spec
+        id: diff
+        run: |
+          if [ ! -f /tmp/live-openapi.json ]; then
+            echo "drift_detected=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Normalize and diff (ignore key ordering)
+          python3 -c "
+          import json, sys
+
+          with open('docs/openapi.json') as f:
+              pinned = json.load(f)
+          with open('/tmp/live-openapi.json') as f:
+              live = json.load(f)
+
+          pinned_paths = set(pinned.get('paths', {}).keys())
+          live_paths = set(live.get('paths', {}).keys())
+
+          added = live_paths - pinned_paths
+          removed = pinned_paths - live_paths
+
+          changes = []
+          if added:
+              changes.append(f'New endpoints: {sorted(added)}')
+          if removed:
+              changes.append(f'Removed endpoints: {sorted(removed)}')
+
+          if changes:
+              print('DRIFT_DETECTED')
+              for c in changes:
+                  print(c)
+              sys.exit(1)
+          else:
+              print('NO_DRIFT')
+          " > /tmp/drift-report.txt 2>&1 || true
+
+          if grep -q "DRIFT_DETECTED" /tmp/drift-report.txt; then
+            echo "drift_detected=true" >> $GITHUB_OUTPUT
+            cat /tmp/drift-report.txt
+          else
+            echo "drift_detected=false" >> $GITHUB_OUTPUT
+            echo "No API drift detected"
+          fi
+      - name: Create drift issue
+        if: steps.diff.outputs.drift_detected == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('/tmp/drift-report.txt', 'utf8');
+
+            // Check if an open drift issue already exists
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'api-drift',
+              state: 'open',
+            });
+
+            if (issues.data.length > 0) {
+              // Update existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: `**Updated drift report** (${new Date().toISOString()}):\n\`\`\`\n${report}\n\`\`\`\n\nWorkflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              });
+            } else {
+              // Create new issue
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '🔍 SkyFi API drift detected',
+                body: `The weekly API spec diff found changes between \`docs/openapi.json\` and the live SkyFi API.\n\n**Diff summary:**\n\`\`\`\n${report}\n\`\`\`\n\nWorkflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\nTo update the pinned spec, run:\n\`\`\`bash\ncurl -s https://app.skyfi.com/platform-api/openapi.json > docs/openapi.json\ngit commit -m "chore: update pinned SkyFi OpenAPI spec"\n\`\`\``,
+                labels: ['api-drift'],
+              });
+            }
