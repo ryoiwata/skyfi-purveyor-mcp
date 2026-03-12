@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import structlog
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
+from sqlalchemy import select
 
 from purveyor.core.errors import ErrorCode, ToolError
 
@@ -116,6 +118,27 @@ def register(mcp: FastMCP) -> None:
 
         nid = str(notification.id)
         log.info("notification_created", notification_id=nid)
+
+        # Register notification ownership for webhook routing (DESIGN_DECISIONS §4)
+        # NOTE: In cloud mode, api_key_hash should come from per-request auth context.
+        # For now, local mode uses settings.skyfi_api_key.
+        if "session_factory" in lc:
+
+            from purveyor.models.tables import NotificationRegistry
+
+            try:
+                api_key = settings.skyfi_api_key or ""
+                api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+                async with lc["session_factory"]() as reg_session:
+                    registry_entry = NotificationRegistry(
+                        id=notification.id,
+                        api_key_hash=api_key_hash,
+                    )
+                    reg_session.add(registry_entry)
+                    await reg_session.commit()
+                log.info("notification_registry_added", notification_id=nid)
+            except Exception as reg_exc:
+                log.warning("notification_registry_add_failed", error=str(reg_exc))
 
         result: dict[str, Any] = {
             "notification_id": nid,
@@ -253,6 +276,25 @@ def register(mcp: FastMCP) -> None:
                 code=ErrorCode.SKYFI_UNAVAILABLE,
                 message=f"Failed to delete notification {notification_id}: {exc}",
             ).to_call_tool_result()
+
+        # Remove from notification_registry (DESIGN_DECISIONS §4)
+        if "session_factory" in lc:
+            import uuid as _uuid
+
+            from purveyor.models.tables import NotificationRegistry
+
+            try:
+                nid = _uuid.UUID(notification_id)
+                async with lc["session_factory"]() as del_session:
+                    del_stmt = select(NotificationRegistry).where(
+                        NotificationRegistry.id == nid
+                    )
+                    rec = (await del_session.execute(del_stmt)).scalar_one_or_none()
+                    if rec is not None:
+                        await del_session.delete(rec)
+                        await del_session.commit()
+            except Exception as del_exc:
+                log.warning("notification_registry_delete_failed", error=str(del_exc))
 
         return {
             "notification_id": notification_id,
