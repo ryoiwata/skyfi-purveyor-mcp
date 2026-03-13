@@ -1,0 +1,32 @@
+# Required: Domain name for the Purveyor service
+domain = "purveyor.example.com"
+
+# Required: ACM certificate ARN (must be in us-east-1 for ALB)
+acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/..."
+
+# Docker image to deploy
+image_repository = "ghcr.io/your-org/purveyor"
+image_tag        = "v1.0.0"
+
+# AWS region
+region = "us-east-1"
+
+# Database instance size
+db_instance_class = "db.t3.micro"
+
+# Enable Redis for caching (recommended for production)
+enable_redis = false
+
+# Use an existing VPC (leave empty to create a new one)
+# existing_vpc_id = "vpc-..."
+
+# ECS task sizing
+container_cpu    = 512
+container_memory = 1024
+desired_count    = 1
+
+# Tags
+tags = {
+  Environment = "production"
+  Team        = "platform"
+}

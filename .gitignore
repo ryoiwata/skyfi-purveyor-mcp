@@ -67,3 +67,6 @@ firebase-debug.log
 
 # Constants
 .hypothesis/
+
+# HashiCorp
+hashicorp-archive-keyring.gpg

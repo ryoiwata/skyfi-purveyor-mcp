@@ -439,7 +439,8 @@ def register(mcp: FastMCP) -> None:
             f"Tasking order for {product_type} / {resolution} over {area_str}. "
             f"Estimated cost: {cost_str}. "
             f"Window: {ws.date()} to {we.date()}. "
-            "Share the confirmation URL with the user for review and approval."
+            "Share the confirmation URL with the user for review and approval. "
+            "Open the confirmation link in your browser to review and approve the order."
         )
 
         log.info(
@@ -587,7 +588,8 @@ def register(mcp: FastMCP) -> None:
         summary = (
             f"Archive order for {provider} / {resolution} scene. "
             f"AOI: {aoi_area_sq_km:.1f} sq km. Estimated cost: {cost_str}. "
-            "Share the confirmation URL with the user for review and approval."
+            "Share the confirmation URL with the user for review and approval. "
+            "Open the confirmation link in your browser to review and approve the order."
         )
 
         log.info(

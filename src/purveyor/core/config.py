@@ -109,14 +109,21 @@ class Settings(BaseSettings):
                     "Generate one with: purveyor generate-key"
                 )
         else:
-            # Local mode: auto-generate an ephemeral key if not set
+            # Local mode: persist key to purveyor.key so all local processes share it.
             if not self.confirmation_secret_key:
-                self.confirmation_secret_key = Fernet.generate_key().decode()
-                log.info(
-                    "Using ephemeral confirmation key. "
-                    "Pending order confirmations will not survive server restart. "
-                    "Set CONFIRMATION_SECRET_KEY in config.json for persistent tokens."
-                )
+                key_file = Path("purveyor.key")
+                if key_file.exists():
+                    self.confirmation_secret_key = key_file.read_text().strip()
+                    log.info("Loaded local confirmation key from purveyor.key")
+                else:
+                    new_key = Fernet.generate_key().decode()
+                    key_file.write_text(new_key)
+                    key_file.chmod(0o600)
+                    self.confirmation_secret_key = new_key
+                    log.info(
+                        "Generated local confirmation key; saved to purveyor.key. "
+                        "Delete purveyor.key to rotate the key (invalidates pending tokens)."
+                    )
         return self
 
     @property

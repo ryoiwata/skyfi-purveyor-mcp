@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+import purveyor.models.tables as _tables  # noqa: F401 — side-effect: registers ORM models with Base.metadata
 from purveyor.models.base import Base
 
 
@@ -55,13 +56,26 @@ def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessi
 
 
 async def init_db(engine: AsyncEngine) -> None:
-    """Create all tables in the database.
+    """Initialize the database schema.
 
-    For production deployments, use Alembic migrations instead.
-    This is useful for tests and local SQLite setup.
+    For SQLite databases — both in-memory (``:memory:``) and file-based — this
+    calls ``Base.metadata.create_all`` directly from the ORM models.  In-memory
+    SQLite is used by tests and the demo agent subprocess; file-based SQLite
+    (``purveyor.db``) is used for local single-user development.
+
+    Alembic migrations cannot target an ephemeral ``:memory:`` connection, and
+    requiring ``alembic upgrade head`` before every ``purveyor demo`` run would
+    be a poor local-dev experience.  ``create_all`` is idempotent — it skips
+    tables that already exist — so it is safe to call on a DB that was already
+    set up by Alembic.
+
+    For Postgres, this function is a no-op.  Always run ``alembic upgrade head``
+    before starting the server against a Postgres database.
     """
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    url = str(engine.url)
+    if ":memory:" in url or url.startswith("sqlite"):
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
 
 
 async def get_session(

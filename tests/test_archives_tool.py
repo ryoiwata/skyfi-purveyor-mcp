@@ -88,6 +88,27 @@ async def test_search_archives_with_wkt_returns_results() -> None:
     assert result["total"] == 3
     assert len(result["archives"]) == 3
     assert "Found 3 archives" in result["summary"]
+    # Each archive must have a skyfi_url
+    for archive in result["archives"]:
+        assert "skyfi_url" in archive
+        assert archive["skyfi_url"].startswith("https://app.skyfi.com/explore/archive/")
+        assert archive["archive_id"] in archive["skyfi_url"]
+
+
+@pytest.mark.asyncio
+async def test_get_archive_details_includes_skyfi_url() -> None:
+    """get_archive_details includes skyfi_url in response and summary."""
+    archive = _make_archive()
+    cached_client = MagicMock()
+    cached_client.get_archive = AsyncMock(return_value=archive)
+
+    tool_fn = mcp._tool_manager.get_tool("get_archive_details").fn
+    result = await tool_fn(archive_id=ARCHIVE_ID, ctx=_make_ctx(cached_client))
+
+    assert isinstance(result, dict)
+    expected_url = f"https://app.skyfi.com/explore/archive/{ARCHIVE_ID}"
+    assert result["skyfi_url"] == expected_url
+    assert expected_url in result["summary"]
 
 
 @pytest.mark.asyncio
