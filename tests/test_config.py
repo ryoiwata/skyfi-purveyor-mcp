@@ -60,11 +60,36 @@ class TestLocalMode:
         assert settings.confirmation_secret_key is not None
         assert len(settings.confirmation_secret_key) > 0
 
-    def test_local_mode_each_instance_gets_unique_key(self) -> None:
-        """Each Settings instance in local mode gets its own ephemeral key."""
+    def test_local_mode_instances_share_persisted_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Multiple Settings instances in local mode share the same persisted key."""
+        monkeypatch.chdir(tmp_path)
         s1 = Settings(local_mode=True, confirmation_secret_key=None)
         s2 = Settings(local_mode=True, confirmation_secret_key=None)
-        assert s1.confirmation_secret_key != s2.confirmation_secret_key
+        assert s1.confirmation_secret_key == s2.confirmation_secret_key
+
+    def test_local_mode_key_persisted_to_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Local mode writes the generated key to purveyor.key."""
+        monkeypatch.chdir(tmp_path)
+        settings = Settings(local_mode=True, confirmation_secret_key=None)
+        key_file = tmp_path / "purveyor.key"
+        assert key_file.exists()
+        assert key_file.read_text().strip() == settings.confirmation_secret_key
+
+    def test_local_mode_key_reloaded_from_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Local mode reloads an existing purveyor.key instead of generating a new one."""
+        from cryptography.fernet import Fernet
+
+        monkeypatch.chdir(tmp_path)
+        existing_key = Fernet.generate_key().decode()
+        (tmp_path / "purveyor.key").write_text(existing_key)
+        settings = Settings(local_mode=True, confirmation_secret_key=None)
+        assert settings.confirmation_secret_key == existing_key
 
     def test_local_mode_explicit_key_preserved(self) -> None:
         """Explicit key is not overwritten in local mode."""
