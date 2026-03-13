@@ -184,8 +184,13 @@ def register(mcp: FastMCP) -> None:
         if location_note:
             summary_parts.append(f"NOTE: {location_note}")
 
+        def _archive_with_url(a: Any) -> dict[str, Any]:
+            d: dict[str, Any] = a.model_dump(mode="json")
+            d["skyfi_url"] = f"https://app.skyfi.com/explore/archive/{a.archive_id}"
+            return d
+
         result: dict[str, Any] = {
-            "archives": [a.model_dump(mode="json") for a in archives],
+            "archives": [_archive_with_url(a) for a in archives],
             "total": total,
             "next_page": response.next_page,
             "summary": " ".join(summary_parts),
@@ -223,12 +228,15 @@ def register(mcp: FastMCP) -> None:
                 message=f"Failed to fetch archive {archive_id}: {exc}",
             ).to_call_tool_result()
 
+        skyfi_url = f"https://app.skyfi.com/explore/archive/{archive_id}"
         return {
             "archive": archive.model_dump(mode="json"),
+            "skyfi_url": skyfi_url,
             "summary": (
                 f"Archive {archive_id}: {archive.provider} {archive.resolution} "
                 f"captured {archive.capture_timestamp.date()}. "
                 f"Cloud cover: {archive.cloud_coverage_percent or 'N/A'}%. "
-                f"Price: ${archive.price_full_scene:.0f}/scene."
+                f"Price: ${archive.price_full_scene:.0f}/scene. "
+                f"View on SkyFi: {skyfi_url}"
             ),
         }
