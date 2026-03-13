@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Any
 
 import structlog
@@ -71,14 +72,18 @@ def setup_logging(log_level: str = "info", log_format: str = "json") -> None:
         processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(level),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        # Explicitly use stderr so stdout is never polluted — critical for
+        # stdio transport mode where stdout is reserved for MCP JSON-RPC messages.
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
         cache_logger_on_first_use=True,
     )
 
-    # Also configure stdlib logging at the same level so third-party libs behave
+    # Also configure stdlib logging at the same level so third-party libs behave.
+    # Force stderr so uvicorn/httpx logs don't bleed into the stdio transport pipe.
     logging.basicConfig(
         format="%(message)s",
         level=level,
+        stream=sys.stderr,
     )
 
 

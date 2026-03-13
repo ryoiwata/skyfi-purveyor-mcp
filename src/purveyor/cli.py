@@ -30,8 +30,11 @@ def serve(local: bool, reload: bool, host: str, port: int, transport: str) -> No
         os.environ.setdefault("LOCAL_MODE", "true")
         os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///purveyor.db")
 
+    # Always write startup message to stderr — stdout is reserved for MCP JSON-RPC
+    # in stdio transport mode and should never receive non-protocol output.
     click.echo(
-        f"Starting Purveyor (transport={transport}, local={local}, host={host}, port={port})"
+        f"Starting Purveyor (transport={transport}, local={local}, host={host}, port={port})",
+        err=True,
     )
 
     if transport == "stdio":

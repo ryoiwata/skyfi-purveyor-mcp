@@ -188,18 +188,47 @@ class DemoAgent:
 
         return response_text, messages
 
+    @staticmethod
+    def _load_dotenv_into(env: dict[str, str]) -> None:
+        """Load variables from a .env file in the current directory into env dict.
+
+        Only sets variables that are not already present in the environment,
+        so shell exports always take precedence over .env file values.
+
+        Args:
+            env: Mutable environment dict to update in-place.
+        """
+        dotenv_path = os.path.join(os.getcwd(), ".env")
+        if not os.path.isfile(dotenv_path):
+            return
+        with open(dotenv_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip("\"'")
+                if key and key not in env:
+                    env[key] = value
+
     async def run(self) -> None:
         """Run the demo agent — spawn server, connect, and start chat loop."""
         import anthropic
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
-        # Spawn Purveyor server as subprocess with stdio transport
-        # Use in-memory SQLite, local mode
+        # Spawn Purveyor server as subprocess with stdio transport.
+        # Start from a copy of the current environment so SKYFI_API_KEY and other
+        # vars set in the shell are inherited.  Then layer in .env file values for
+        # anything not already present, and finally apply demo-specific overrides.
         env = os.environ.copy()
+        self._load_dotenv_into(env)
+
+        # Demo-specific overrides
         env["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
         env["LOCAL_MODE"] = "true"
-        env["LOG_FORMAT"] = "json"  # suppress colored output in subprocess
+        env["LOG_FORMAT"] = "json"  # keep subprocess logs as JSON (goes to stderr)
 
         server_params = StdioServerParameters(
             command="purveyor",

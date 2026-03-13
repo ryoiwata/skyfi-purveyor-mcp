@@ -80,6 +80,8 @@ module = [
     "pyproj.*",
     "alembic.*",
     "testcontainers.*",
+    "anthropic",
+    "anthropic.*",
 ]
 ignore_missing_imports = true
 
