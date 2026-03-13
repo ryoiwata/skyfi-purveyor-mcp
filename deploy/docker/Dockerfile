@@ -9,6 +9,7 @@ WORKDIR /app
 # Copy dependency specs first for layer caching
 COPY pyproject.toml ./
 COPY src/ ./src/
+COPY README.md ./
 
 # Install all dependencies into the virtual environment
 RUN uv sync --no-dev
