@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+import purveyor.models.tables as _tables  # noqa: F401 — side-effect: registers ORM models with Base.metadata
 from purveyor.models.base import Base
 
 
