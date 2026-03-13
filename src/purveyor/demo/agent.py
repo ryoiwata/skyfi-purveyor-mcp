@@ -225,8 +225,9 @@ class DemoAgent:
         env = os.environ.copy()
         self._load_dotenv_into(env)
 
-        # Demo-specific overrides
-        env["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+        # Demo-specific overrides: use the same on-disk DB as `purveyor serve --local`
+        # so confirmation records created here are visible to the HTTP server.
+        env["DATABASE_URL"] = "sqlite+aiosqlite:///purveyor.db"
         env["LOCAL_MODE"] = "true"
         env["LOG_FORMAT"] = "json"  # keep subprocess logs as JSON (goes to stderr)
 
