@@ -1,142 +1,78 @@
-# Google ADK Agent for Purveyor
+# Purveyor MCP — Google ADK Integration
 
-A [Google ADK](https://google.github.io/adk-docs/) test agent that connects to Purveyor (the SkyFi MCP server) via Gemini. Users can conversationally search satellite image archives, get pricing, check tasking feasibility, place orders, and monitor deliveries — all through natural language.
+Add SkyFi satellite imagery to any [Google ADK](https://google.github.io/adk-docs/) agent in three lines.
 
-## Overview
+## Add SkyFi Satellite Imagery to Your ADK Agent
 
-This agent uses ADK's `McpToolset` to connect to Purveyor's `/mcp` endpoint and expose all Purveyor tools to a Gemini-powered LLM agent. Three connection options are provided:
-
-| Option | File | When to use |
-|--------|------|-------------|
-| A (SSE/HTTP) | `satellite_imagery_agent/agent.py` | Development + demos — full `adk web` UI |
-| B (Stdio) | `satellite_imagery_agent/agent_stdio.py` | Embedded mode — Purveyor runs as subprocess |
-| C (Programmatic) | `test_programmatic.py` | Scripted tests — no browser UI needed |
-
-## Prerequisites
-
-- Python 3.11+ (Purveyor requires 3.11; ADK requires 3.9+)
-- [google-adk](https://pypi.org/project/google-adk/) installed: `pip install google-adk python-dotenv`
-- A [Gemini API key](https://aistudio.google.com/apikey) (`GOOGLE_API_KEY`)
-- A [SkyFi API key](https://app.skyfi.com) (`SKYFI_API_KEY`)
-- Purveyor running (see below)
-
-## Quick Start — Option A: SSE/HTTP (Recommended)
-
-**Step 1:** Copy the env template and fill in your keys:
-
-```bash
-cp .env.example .env
-# Edit .env and set GOOGLE_API_KEY, SKYFI_API_KEY
-```
-
-**Step 2:** Start Purveyor (from the project root):
-
-```bash
-uv run purveyor serve --local
-# Purveyor listens at http://localhost:8000
-```
-
-**Step 3:** Launch the ADK web UI (from `agents/google_adk/`):
-
-```bash
-cd agents/google_adk
-uv run adk web --port 8080
-# Or against the AWS deployment:
-PURVEYOR_URL=http://purveyor-691022321.us-east-1.elb.amazonaws.com uv run adk web --port 8080
-```
-
-**Step 4:** Open `http://localhost:8080`, select `satellite_imagery_agent` from the dropdown, and start chatting.
-
-### Example prompts
-
-```
-Show me recent satellite imagery of the Port of Rotterdam with less than 10% cloud cover
-What would it cost to get high-resolution imagery of Suez Canal?
-Check feasibility for tasking over Kyiv, Ukraine in the next 2 weeks
-Search for open data imagery over Austin, TX from 2024
-Who am I? (verify your SkyFi account)
-```
-
-## Option B: Stdio Mode
-
-Purveyor runs as a subprocess instead of a separate HTTP server.
-
-**Step 1:** Update `satellite_imagery_agent/__init__.py` to import the stdio agent:
+Copy this into your agent's `tools` list:
 
 ```python
-# satellite_imagery_agent/__init__.py
-from . import agent_stdio as agent  # use stdio instead of HTTP
-```
+import os
+from google.adk.tools.mcp_tool import McpToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
-**Step 2:** Run `adk web` as normal.
-
-> **Important:** The order confirmation flow requires an HTTP server. If you use stdio mode, confirmation URLs (`http://localhost:8000/confirm/...`) will not work unless you also run Purveyor's HTTP server with the same `CONFIRMATION_SECRET_KEY`:
->
-> ```bash
-> # Terminal 1: HTTP server (for confirmations)
-> CONFIRMATION_SECRET_KEY=<your-key> uv run purveyor serve --local
->
-> # Terminal 2: adk web with stdio agent
-> cd agents/google_adk
-> adk web
-> ```
-
-## Option C: Programmatic Testing
-
-Run queries without `adk web` — useful for smoke testing or CI:
-
-```bash
-# Purveyor must be running first (or set PURVEYOR_URL to remote instance)
-uv run purveyor serve --local &
-
-cd agents/google_adk
-uv run python test_programmatic.py
-# Or against the AWS deployment:
-PURVEYOR_URL=http://purveyor-691022321.us-east-1.elb.amazonaws.com uv run python test_programmatic.py
-```
-
-The script fires three queries and prints responses:
-1. "Who am I?" — verifies auth and API key
-2. "Geocode 'Central Park, New York'" — verifies geocoding tool
-3. "Search for recent satellite imagery of Central Park with less than 20% cloud cover" — end-to-end tool chain
-
-## Connecting to AWS (or any remote Purveyor instance)
-
-Just change `PURVEYOR_URL` in your `.env`:
-
-```env
-PURVEYOR_URL=https://your-purveyor-instance.example.com
-```
-
-The ADK agent will connect to the remote Purveyor MCP endpoint. Authentication (`X-Skyfi-Api-Key`) is passed in headers automatically.
-
-## Tool Filtering
-
-By default, all Purveyor tools are exposed to the agent. For production use cases, you may want to restrict which tools are available:
-
-```python
-# In agent.py, uncomment and adjust tool_filter:
 McpToolset(
-    connection_params=...,
-    tool_filter=[
-        "search_archives",
-        "get_archive_details",
-        "get_pricing",
-        "geocode_location",
-        "create_aoi_from_point",
-        "whoami",
-    ],
+    connection_params=StreamableHTTPConnectionParams(
+        url="http://purveyor-691022321.us-east-1.elb.amazonaws.com/mcp",
+        headers={"X-Skyfi-Api-Key": os.environ.get("SKYFI_API_KEY", "")},
+    ),
 )
 ```
 
-Use `tool_filter` to:
-- Reduce the agent's "surface area" for focused use cases
-- Prevent destructive operations (exclude order-creating tools for read-only agents)
-- Improve response quality by reducing tool choice noise
+Set your keys in `.env`:
+
+```env
+GOOGLE_API_KEY=your-gemini-api-key
+SKYFI_API_KEY=your-skyfi-api-key
+```
+
+That's it. Your agent now has 20 satellite imagery tools.
+
+## Run the Example Agent
+
+If you don't have an existing agent and want to try it out:
+
+```bash
+pip install google-adk python-dotenv
+cp .env.example .env  # fill in your keys
+cd agents/google_adk
+adk web --port 8080
+```
+
+Open `http://localhost:8080` and select `satellite_imagery_agent`.
+
+**Example prompts:**
+
+```
+Show me recent satellite imagery of the Port of Rotterdam with less than 10% cloud cover
+What would it cost to get high-resolution imagery of the Suez Canal?
+Check feasibility for tasking over Kyiv, Ukraine in the next 2 weeks
+Who am I?
+```
+
+## Test the Connection
+
+Verify Purveyor is reachable and your API key works — no Gemini key required:
+
+```bash
+python test_connection.py
+```
+
+Expected output:
+
+```
+Connecting to http://purveyor-691022321.us-east-1.elb.amazonaws.com/mcp ...
+
+✅ Connected! Found 20 tools:
+
+  calculate_aoi_area: Calculate the area of a WKT polygon in sq km...
+  cancel_pending_order: Cancel a pending confirmation before the user confirms...
+  ...
+
+Purveyor MCP is working. Add McpToolset to your agent's tools list to get started.
+```
 
 ## Available Tools
-
-All 20 tools exposed by Purveyor (as of March 2026):
 
 | Tool | Description |
 |------|-------------|
@@ -161,47 +97,48 @@ All 20 tools exposed by Purveyor (as of March 2026):
 | `create_aoi_from_point` | Create an AOI polygon from a center point and area |
 | `calculate_aoi_area` | Calculate the area of a WKT polygon in sq km |
 
-## Troubleshooting
+## Configuration
 
-### `Connection refused` when running `adk web`
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `SKYFI_API_KEY` | Yes | — | SkyFi API key from [app.skyfi.com](https://app.skyfi.com) |
+| `GOOGLE_API_KEY` | Yes | — | Gemini API key from [aistudio.google.com](https://aistudio.google.com/apikey) |
+| `PURVEYOR_URL` | No | AWS deployment | Purveyor server base URL |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model name |
 
-Purveyor is not running. Start it first:
+To limit which tools are exposed to the agent, use `tool_filter` in `McpToolset`:
 
-```bash
-uv run purveyor serve --local
+```python
+McpToolset(
+    connection_params=...,
+    tool_filter=["search_archives", "get_pricing", "geocode_location", "whoami"],
+)
 ```
 
-### `No tools found` in the ADK UI
+## Self-Hosted Purveyor
 
-1. Check that Purveyor started successfully: `curl http://localhost:8000/health`
-2. Verify `PURVEYOR_URL` in your `.env` matches the Purveyor address
-3. Check `SKYFI_API_KEY` is set — Purveyor requires it to authenticate the MCP session
+Running your own Purveyor instance? Change `PURVEYOR_URL`:
 
-### Confirmation links don't work
+```env
+PURVEYOR_URL=http://localhost:8000
+```
 
-If you're using stdio mode, the HTTP server is not running. Start a separate Purveyor HTTP instance on the same port that confirmation URLs point to (default `http://localhost:8000`).
+See the [main README](../../README.md) for Purveyor setup instructions. For advanced use cases like stdio transport (embedding Purveyor as a subprocess), see the [ADK MCP docs](https://google.github.io/adk-docs/tools/mcp-tools/).
 
-### `ModuleNotFoundError: No module named 'google.adk'`
+## Troubleshooting
 
-Install ADK:
+**`No tools found` in the ADK UI**
+- Verify Purveyor is reachable: `curl http://purveyor-691022321.us-east-1.elb.amazonaws.com/health`
+- Check `SKYFI_API_KEY` is set — Purveyor requires it to authenticate the MCP session
+- Run `python test_connection.py` to isolate connection issues from ADK issues
+
+**`429` with `limit: 0`**
+The Gemini model has no free-tier quota on your API key. Try `gemini-2.0-flash` or enable billing.
+
+**`ModuleNotFoundError: No module named 'google.adk'`**
 
 ```bash
 pip install google-adk python-dotenv
 ```
 
-ADK requires Python 3.9+. Purveyor requires Python 3.11+. Use 3.11+ for both.
-
-### Windows: `NotImplementedError` from subprocess transport
-
-Run `adk web --no-reload` instead:
-
-```bash
-adk web --no-reload
-```
-
-## Important Notes
-
-- **Stdio mode + HTTP confirmations:** Both the stdio subprocess and the HTTP server must use the same `CONFIRMATION_SECRET_KEY`. Generate one with `uv run purveyor generate-key`.
-- **structlog in stdio mode:** Purveyor writes logs to stderr by default, which prevents contaminating the MCP JSON-RPC stream on stdout. Do not redirect stderr or change `LOG_FORMAT` to anything that writes to stdout.
-- **ADK version:** This agent was written against google-adk 0.2.0+. The `McpToolset` API and connection parameter classes may differ in earlier or later versions.
-- **Model choice:** `gemini-2.5-flash` is the default. Override via `GEMINI_MODEL` in `.env` (e.g. `gemini-2.5-pro`). If you get a 429 with `limit: 0`, the model has no free-tier quota on your API key — try a different model or enable billing.
+ADK requires Python 3.9+. Use Python 3.11+ to match Purveyor.

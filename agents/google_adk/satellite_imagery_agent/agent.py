@@ -1,14 +1,14 @@
 """
-Google ADK agent — Option A: SSE/HTTP connection to a running Purveyor server.
+Google ADK satellite imagery agent — connects to Purveyor MCP via HTTP.
 
 Prerequisites:
   pip install google-adk python-dotenv
-  cp .env.example .env  # fill in GOOGLE_API_KEY, SKYFI_API_KEY, PURVEYOR_URL
+  cp .env.example .env  # fill in GOOGLE_API_KEY and SKYFI_API_KEY
 
 Usage:
   cd agents/google_adk
-  adk web
-  # Then open http://localhost:8000 and select satellite_imagery_agent
+  adk web --port 8080
+  # Open http://localhost:8080 and select satellite_imagery_agent
 """
 
 import os
@@ -20,25 +20,18 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 
 load_dotenv()
 
-PURVEYOR_URL = os.environ.get("PURVEYOR_URL", "http://localhost:8000")
+PURVEYOR_URL = os.environ.get(
+    "PURVEYOR_URL", "http://purveyor-691022321.us-east-1.elb.amazonaws.com"
+)
 SKYFI_API_KEY = os.environ.get("SKYFI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 root_agent = LlmAgent(
     model=GEMINI_MODEL,
     name="satellite_imagery_agent",
-    instruction="""You are a satellite imagery assistant powered by SkyFi via Purveyor.
-You can help users:
-- Search satellite image archives by location, date, resolution, and cloud cover
-- Get pricing for imagery
-- Check feasibility for new tasking orders
-- Place archive and tasking orders (requires user confirmation via browser)
-- Monitor order status and download deliverables
-- Geocode locations and create areas of interest
-
-When a user asks about satellite imagery for a location, start by geocoding the
-location, then search archives. Always tell the user about pricing before ordering.
-When placing orders, explain that they'll need to confirm via a browser link.""",
+    instruction="You are a satellite imagery assistant powered by SkyFi. "
+    "Help users search archives, check pricing and feasibility, place orders, "
+    "and monitor deliveries. Orders require user confirmation via a browser link.",
     tools=[
         McpToolset(
             connection_params=StreamableHTTPConnectionParams(

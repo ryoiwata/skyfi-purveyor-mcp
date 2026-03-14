@@ -6,7 +6,7 @@ This directory contains test and demo agents for different MCP client frameworks
 
 | Directory | Framework | Description |
 |-----------|-----------|-------------|
-| [`google_adk/`](google_adk/README.md) | Google ADK + Gemini | Conversational satellite imagery agent using `McpToolset` over SSE/HTTP |
+| [`google_adk/`](google_adk/README.md) | Google ADK + Gemini | Integration example — add SkyFi satellite imagery to any ADK agent via `McpToolset` |
 
 ## What These Are
 
