@@ -99,7 +99,11 @@ async def test_search_archives_with_wkt_returns_results() -> None:
 
 @pytest.mark.asyncio
 async def test_get_archive_details_includes_preview_url() -> None:
-    """get_archive_details includes preview_url built from the archive footprint."""
+    """get_archive_details includes preview_url inside the archive dict (not top-level).
+
+    preview_url is nested inside result["archive"] so that its location is consistent
+    with search_archives, where preview_url is inside each archive object.
+    """
     archive = _make_archive()
     cached_client = MagicMock()
     cached_client.get_archive = AsyncMock(return_value=archive)
@@ -108,10 +112,53 @@ async def test_get_archive_details_includes_preview_url() -> None:
     result = await tool_fn(archive_id=ARCHIVE_ID, ctx=_make_ctx(cached_client))
 
     assert isinstance(result, dict)
-    assert "preview_url" in result
-    assert f"/explore/open/crop/{ARCHIVE_ID}" in result["preview_url"]
-    assert "aoi=POLYGON" in result["preview_url"]
-    assert result["preview_url"] in result["summary"]
+    archive_data = result["archive"]
+    assert "preview_url" in archive_data, "preview_url must be inside result['archive']"
+    assert f"/explore/open/crop/{ARCHIVE_ID}" in archive_data["preview_url"]
+    assert "aoi=POLYGON" in archive_data["preview_url"]
+    # preview_url must not be at the top level (would be inconsistent with search_archives)
+    assert "preview_url" not in result, "preview_url should be inside archive dict, not top-level"
+    # summary references the explore viewer
+    assert "/explore/open/crop/" in result["summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_archive_details_includes_thumbnail_url_when_available() -> None:
+    """get_archive_details includes thumbnail_url inside archive dict when thumbnail_urls set."""
+    from purveyor.core.skyfi_types import Archive
+
+    base_data = _make_archive().model_dump()
+    base_data["thumbnail_urls"] = {
+        "200x200": "https://cdn.skyfi.com/thumb/abc/200.jpg",
+        "500x500": "https://cdn.skyfi.com/thumb/abc/500.jpg",
+    }
+    archive_with_thumb = Archive(**base_data)
+    cached_client = MagicMock()
+    cached_client.get_archive = AsyncMock(return_value=archive_with_thumb)
+
+    tool_fn = mcp._tool_manager.get_tool("get_archive_details").fn
+    result = await tool_fn(archive_id=ARCHIVE_ID, ctx=_make_ctx(cached_client))
+
+    assert isinstance(result, dict)
+    archive_data = result["archive"]
+    # thumbnail_url should be the largest available (500x500 = 250k px > 200x200 = 40k px)
+    assert archive_data.get("thumbnail_url") == "https://cdn.skyfi.com/thumb/abc/500.jpg"
+    # summary references the thumbnail
+    assert "cdn.skyfi.com" in result["summary"]
+
+
+@pytest.mark.asyncio
+async def test_get_archive_details_no_thumbnail_url_when_absent() -> None:
+    """get_archive_details omits thumbnail_url when archive has no thumbnail_urls."""
+    archive = _make_archive()  # thumbnail_urls=None by default
+    cached_client = MagicMock()
+    cached_client.get_archive = AsyncMock(return_value=archive)
+
+    tool_fn = mcp._tool_manager.get_tool("get_archive_details").fn
+    result = await tool_fn(archive_id=ARCHIVE_ID, ctx=_make_ctx(cached_client))
+
+    assert isinstance(result, dict)
+    assert "thumbnail_url" not in result["archive"]
 
 
 @pytest.mark.asyncio

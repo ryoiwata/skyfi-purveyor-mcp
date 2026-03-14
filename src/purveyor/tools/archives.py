@@ -14,6 +14,22 @@ from purveyor.tools._helpers import get_skyfi_client
 from purveyor.tools.geospatial import _calculate_area_sq_km
 from purveyor.tools.preview import build_skyfi_preview_url
 
+
+def _best_thumbnail_url(thumbnail_urls: dict[str, str] | None) -> str | None:
+    """Return the URL for the largest available thumbnail, or None if unavailable."""
+    if not thumbnail_urls:
+        return None
+
+    def _area(key: str) -> int:
+        try:
+            w, h = key.lower().split("x")
+            return int(w) * int(h)
+        except (ValueError, AttributeError):
+            return 0
+
+    best_key = max(thumbnail_urls.keys(), key=_area)
+    return thumbnail_urls[best_key]
+
 McpContext = Context[Any, Any, Any]
 
 log = structlog.get_logger(__name__)
@@ -203,10 +219,13 @@ def register(mcp: FastMCP) -> None:
 
         def _archive_with_url(a: Any) -> dict[str, Any]:
             d: dict[str, Any] = a.model_dump(mode="json")
-            # preview_url is the correct URL for viewing the image with the search AOI
-            # overlaid; /explore/archive/{id} is a detail page that does not work for
-            # all providers (e.g. Sentinel) — expose only preview_url to avoid confusion.
+            # preview_url: interactive crop viewer with AOI overlaid (client-side URL).
+            # /explore/archive/{id} is excluded — fails for Sentinel and some other providers.
             d["preview_url"] = build_skyfi_preview_url(a.archive_id, wkt)
+            # thumbnail_url: SkyFi-provided image thumbnail (always works when present).
+            thumb = _best_thumbnail_url(a.thumbnail_urls)
+            if thumb:
+                d["thumbnail_url"] = thumb
             return d
 
         result: dict[str, Any] = {
@@ -248,18 +267,31 @@ def register(mcp: FastMCP) -> None:
                 message=f"Failed to fetch archive {archive_id}: {exc}",
             ).to_call_tool_result()
 
-        # preview_url uses the archive's own footprint as the AOI so the crop viewer
-        # shows the full scene extent.
+        # Build archive dict and annotate with preview fields before returning.
+        archive_dict: dict[str, Any] = archive.model_dump(mode="json")
+
+        # preview_url: interactive crop viewer built from the archive's own footprint.
+        # /explore/archive/{id} is NOT used — it fails for Sentinel and some providers.
         preview_url = build_skyfi_preview_url(archive_id, archive.footprint)
+        archive_dict["preview_url"] = preview_url
+
+        # thumbnail_url: SkyFi-provided image thumbnail (API-sourced, always works when set).
+        thumb = _best_thumbnail_url(archive.thumbnail_urls)
+        if thumb:
+            archive_dict["thumbnail_url"] = thumb
+
+        summary = (
+            f"Archive {archive_id}: {archive.provider} {archive.resolution} "
+            f"captured {archive.capture_timestamp.date()}. "
+            f"Cloud cover: {archive.cloud_coverage_percent or 'N/A'}%. "
+            f"Price: ${archive.price_full_scene:.0f}/scene. "
+            f"AOI limits: {archive.min_sq_km}-{archive.max_sq_km} km². "
+        )
+        if thumb:
+            summary += f"Image thumbnail: {thumb}. "
+        summary += f"Explore viewer: {preview_url}"
+
         return {
-            "archive": archive.model_dump(mode="json"),
-            "preview_url": preview_url,
-            "summary": (
-                f"Archive {archive_id}: {archive.provider} {archive.resolution} "
-                f"captured {archive.capture_timestamp.date()}. "
-                f"Cloud cover: {archive.cloud_coverage_percent or 'N/A'}%. "
-                f"Price: ${archive.price_full_scene:.0f}/scene. "
-                f"AOI limits: {archive.min_sq_km}-{archive.max_sq_km} km². "
-                f"Preview: {preview_url}"
-            ),
+            "archive": archive_dict,
+            "summary": summary,
         }
