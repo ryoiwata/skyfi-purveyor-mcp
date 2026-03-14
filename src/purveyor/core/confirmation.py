@@ -16,6 +16,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 import structlog
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Request
@@ -23,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from purveyor.core.config import Settings
-from purveyor.core.errors import ErrorCode, ToolError
+from purveyor.core.errors import ErrorCode, ToolError, skyfi_error_from_response
 from purveyor.core.skyfi_client import SkyFiClient
 from purveyor.core.skyfi_types import (
     ArchiveOrderRequest,
@@ -246,6 +247,8 @@ async def confirm_order(
         else:
             request_archive = ArchiveOrderRequest.model_validate(order_params)
             order_response = await client.create_archive_order(request_archive)
+    except httpx.HTTPStatusError as exc:
+        raise skyfi_error_from_response(exc.response) from exc
     finally:
         if should_close_client:
             await client.close()
