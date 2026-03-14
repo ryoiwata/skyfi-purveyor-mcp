@@ -71,3 +71,6 @@ firebase-debug.log
 
 # HashiCorp
 hashicorp-archive-keyring.gpg
+
+# ADK
+.adk/
