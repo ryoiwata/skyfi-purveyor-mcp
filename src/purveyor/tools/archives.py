@@ -11,6 +11,7 @@ from mcp.types import ToolAnnotations
 
 from purveyor.core.errors import ErrorCode, ToolError
 from purveyor.tools._helpers import get_skyfi_client
+from purveyor.tools.geospatial import _calculate_area_sq_km
 from purveyor.tools.preview import build_skyfi_preview_url
 
 McpContext = Context[Any, Any, Any]
@@ -159,6 +160,20 @@ def register(mcp: FastMCP) -> None:
             ),
             ).to_call_tool_result()
 
+        # Calculate AOI area (best-effort — wkt is always set at this point)
+        import asyncio as _asyncio
+
+        aoi_area_km2: float | None = None
+        try:
+            from shapely import wkt as _shapely_wkt
+
+            _polygon = await _asyncio.to_thread(_shapely_wkt.loads, wkt)
+            aoi_area_km2 = round(
+                await _asyncio.to_thread(_calculate_area_sq_km, _polygon), 2
+            )
+        except Exception as _area_exc:
+            log.debug("search_archives_area_calc_failed", error=str(_area_exc))
+
         # Build summary (Design Decision §14: dense, factual, agent-facing)
         total = response.total or len(archives)
         prices = [a.price_full_scene for a in archives if a.price_full_scene > 0]
@@ -196,6 +211,7 @@ def register(mcp: FastMCP) -> None:
             "archives": [_archive_with_url(a) for a in archives],
             "total": total,
             "next_page": response.next_page,
+            "aoi_area_km2": aoi_area_km2,
             "summary": " ".join(summary_parts),
         }
         if location_note:

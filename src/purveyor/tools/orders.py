@@ -18,6 +18,11 @@ McpContext = Context[Any, Any, Any]
 
 log = structlog.get_logger(__name__)
 
+# SkyFi order AOI size limits (sq km) — validated client-side before token creation
+# to avoid surfacing the error only after the user clicks the confirmation link.
+SKYFI_MIN_AOI_KM2 = 5.0
+SKYFI_MAX_AOI_KM2 = 10_000.0
+
 
 def register(mcp: FastMCP) -> None:
     """Register order management tools on the MCP server."""
@@ -341,6 +346,26 @@ def register(mcp: FastMCP) -> None:
         except Exception:
             aoi_area_sq_km = 0.0
 
+        # Validate AOI size against SkyFi order limits before creating the token
+        if aoi_area_sq_km > SKYFI_MAX_AOI_KM2:
+            return ToolError(
+                code=ErrorCode.AOI_TOO_LARGE,
+                message=(
+                    f"AOI too large ({aoi_area_sq_km:.1f} km²). SkyFi maximum for orders is "
+                    f"{SKYFI_MAX_AOI_KM2:,.0f} km². Try creating a smaller AOI using "
+                    "create_aoi_from_point with a smaller radius, or geocode a more specific location."  # noqa: E501
+                ),
+            ).to_call_tool_result()
+        if 0 < aoi_area_sq_km < SKYFI_MIN_AOI_KM2:
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"AOI too small ({aoi_area_sq_km:.1f} km²). SkyFi minimum for orders is "
+                    f"{SKYFI_MIN_AOI_KM2} km². Try creating a larger AOI using "
+                    "create_aoi_from_point with a bigger radius."
+                ),
+            ).to_call_tool_result()
+
         # Estimate cost via pricing API
         estimated_cost_cents = 0
         price_per_sq_km = 0.0
@@ -559,6 +584,26 @@ def register(mcp: FastMCP) -> None:
             aoi_area_sq_km = await asyncio.to_thread(_calculate_area_sq_km, polygon)
         except Exception as area_exc:
             log.warning("archive_area_calc_failed", error=str(area_exc))
+
+        # Validate AOI size against SkyFi order limits before creating the token
+        if aoi_area_sq_km > SKYFI_MAX_AOI_KM2:
+            return ToolError(
+                code=ErrorCode.AOI_TOO_LARGE,
+                message=(
+                    f"AOI too large ({aoi_area_sq_km:.1f} km²). SkyFi maximum for orders is "
+                    f"{SKYFI_MAX_AOI_KM2:,.0f} km². Try creating a smaller AOI using "
+                    "create_aoi_from_point with a smaller radius, or geocode a more specific location."  # noqa: E501
+                ),
+            ).to_call_tool_result()
+        if 0 < aoi_area_sq_km < SKYFI_MIN_AOI_KM2:
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"AOI too small ({aoi_area_sq_km:.1f} km²). SkyFi minimum for orders is "
+                    f"{SKYFI_MIN_AOI_KM2} km². Try creating a larger AOI using "
+                    "create_aoi_from_point with a bigger radius."
+                ),
+            ).to_call_tool_result()
 
         # Estimate cost from archive pricing
         price_per_sq_km_cents = getattr(archive, "price_for_one_square_km_cents", 0) or 0

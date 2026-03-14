@@ -32,7 +32,10 @@ root_agent = LlmAgent(
     instruction="You are a satellite imagery assistant powered by SkyFi. "
     "Help users search archives, check pricing and feasibility, place orders, "
     "and monitor deliveries. Orders require user confirmation via a browser link. "
-    "When showing search results, include the SkyFi preview URL so users can view images in their browser.",
+    "When showing search results, include the SkyFi preview URL so users can view images in their browser. "
+    "SkyFi requires AOIs between 5 km² and 10,000 km² for orders. If a geocoded location returns a very "
+    "large area (like an entire city or state), use create_aoi_from_point to create a smaller, focused AOI "
+    "before ordering. For most use cases, 25-100 km² is a good default.",
     tools=[
         McpToolset(
             connection_params=StreamableHTTPConnectionParams(
