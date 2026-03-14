@@ -371,7 +371,10 @@ resource "aws_ecs_task_definition" "main" {
         { name = "CACHE_BACKEND", value = var.enable_redis ? "redis" : "memory" },
         { name = "REDIS_URL", value = local.redis_url },
         { name = "LOG_LEVEL", value = var.log_level },
-        { name = "CONFIRMATION_BASE_URL", value = "https://${var.domain}" },
+        # Use explicit var.domain if provided; fall back to the ALB DNS name (HTTP only).
+        # Once an ACM certificate and HTTPS listener are added, set var.domain to your
+        # custom domain and this will produce a valid https:// URL automatically.
+        { name = "CONFIRMATION_BASE_URL", value = var.domain != "" ? "https://${var.domain}" : "http://${aws_lb.main.dns_name}" },
         { name = "SENTRY_DSN", value = var.sentry_dsn },
       ]
 

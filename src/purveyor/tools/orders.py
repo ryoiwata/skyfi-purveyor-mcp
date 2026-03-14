@@ -47,7 +47,6 @@ def register(mcp: FastMCP) -> None:
             sort_dir: Sort direction (asc or desc).
         """
         log.info("tool_list_orders", order_type=order_type)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
         cached_client = get_skyfi_client(ctx)
 
         from purveyor.core.skyfi_types import OrderType, SortColumn, SortDirection
@@ -291,6 +290,7 @@ def register(mcp: FastMCP) -> None:
         cache = lc["cache"]
 
         from purveyor.core.confirmation import (
+            compute_token_hash,
             create_confirmation,
             encrypt_confirmation_token,
         )
@@ -415,16 +415,30 @@ def register(mcp: FastMCP) -> None:
             "price_per_sq_km": price_per_sq_km,
         }
 
-        token = encrypt_confirmation_token(token_payload, settings.fernet_key)
+        try:
+            token = encrypt_confirmation_token(token_payload, settings.fernet_key)
+        except Exception as enc_exc:
+            log.error("tasking_order_token_encrypt_failed", error=str(enc_exc))
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Failed to create confirmation token: {enc_exc}",
+            ).to_call_tool_result()
 
         # Compute api_key_hash for DB routing
         api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
         # Persist confirmation record
-        async with session_factory() as session:
-            record = await create_confirmation(
-                session, token, "TASKING", api_key_hash, estimated_cost_cents
-            )
+        try:
+            async with session_factory() as session:
+                record = await create_confirmation(
+                    session, token, "TASKING", api_key_hash, estimated_cost_cents
+                )
+        except Exception as db_exc:
+            log.error("tasking_order_db_write_failed", error=str(db_exc))
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Failed to save confirmation record: {db_exc}",
+            ).to_call_tool_result()
 
         # Build confirmation URL
         base = (settings.confirmation_base_url or f"http://localhost:{settings.server_port}").rstrip("/")
@@ -441,10 +455,13 @@ def register(mcp: FastMCP) -> None:
             "Open the confirmation link in your browser to review and approve the order."
         )
 
+        fernet_key_fingerprint = hashlib.sha256(settings.fernet_key).hexdigest()[:8]
         log.info(
             "tasking_order_confirmation_created",
             confirmation_id=str(record.id),
             estimated_cost_cents=estimated_cost_cents,
+            fernet_key_fingerprint=fernet_key_fingerprint,
+            token_hash_prefix=compute_token_hash(token)[:16],
         )
 
         return {
@@ -492,6 +509,7 @@ def register(mcp: FastMCP) -> None:
         session_factory = lc["session_factory"]
 
         from purveyor.core.confirmation import (
+            compute_token_hash,
             create_confirmation,
             encrypt_confirmation_token,
         )
@@ -568,13 +586,28 @@ def register(mcp: FastMCP) -> None:
             "price_per_sq_km": price_per_sq_km_cents / 100.0,
         }
 
-        token = encrypt_confirmation_token(token_payload, settings.fernet_key)
+        try:
+            token = encrypt_confirmation_token(token_payload, settings.fernet_key)
+        except Exception as enc_exc:
+            log.error("archive_order_token_encrypt_failed", error=str(enc_exc))
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Failed to create confirmation token: {enc_exc}",
+            ).to_call_tool_result()
+
         api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
-        async with session_factory() as session:
-            record = await create_confirmation(
-                session, token, "ARCHIVE", api_key_hash, estimated_cost_cents
-            )
+        try:
+            async with session_factory() as session:
+                record = await create_confirmation(
+                    session, token, "ARCHIVE", api_key_hash, estimated_cost_cents
+                )
+        except Exception as db_exc:
+            log.error("archive_order_db_write_failed", error=str(db_exc))
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Failed to save confirmation record: {db_exc}",
+            ).to_call_tool_result()
 
         base = (settings.confirmation_base_url or f"http://localhost:{settings.server_port}").rstrip("/")
         confirmation_url = f"{base}/confirm/{token}"
@@ -590,10 +623,13 @@ def register(mcp: FastMCP) -> None:
             "Open the confirmation link in your browser to review and approve the order."
         )
 
+        fernet_key_fingerprint = hashlib.sha256(settings.fernet_key).hexdigest()[:8]
         log.info(
             "archive_order_confirmation_created",
             confirmation_id=str(record.id),
             estimated_cost_cents=estimated_cost_cents,
+            fernet_key_fingerprint=fernet_key_fingerprint,
+            token_hash_prefix=compute_token_hash(token)[:16],
         )
 
         return {
@@ -677,7 +713,6 @@ def register(mcp: FastMCP) -> None:
             delivery_params: Delivery credentials dict for the chosen driver.
         """
         log.info("tool_request_redelivery", order_id=order_id, delivery_driver=delivery_driver)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
         cached_client = get_skyfi_client(ctx)
 
         from purveyor.core.skyfi_types import (

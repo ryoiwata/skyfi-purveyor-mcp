@@ -5,8 +5,9 @@ variable "region" {
 }
 
 variable "domain" {
-  description = "Domain name for the Purveyor service (e.g., purveyor.example.com)"
+  description = "Custom domain name for the Purveyor service (e.g., purveyor.example.com). Leave empty to use the ALB DNS name with HTTP."
   type        = string
+  default     = ""
 }
 
 variable "image_tag" {
@@ -34,8 +35,9 @@ variable "enable_redis" {
 }
 
 variable "acm_certificate_arn" {
-  description = "ACM certificate ARN for HTTPS on the ALB"
+  description = "ACM certificate ARN for HTTPS on the ALB. Leave empty when not using HTTPS."
   type        = string
+  default     = ""
 }
 
 variable "existing_vpc_id" {

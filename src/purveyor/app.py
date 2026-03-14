@@ -305,6 +305,7 @@ def create_app(settings: Any | None = None) -> FastAPI:
         confirmation record in the DB to determine the current state.
         """
         from purveyor.core.confirmation import (
+            compute_token_hash,
             decrypt_confirmation_token,
             get_confirmation_by_token,
         )
@@ -313,11 +314,27 @@ def create_app(settings: Any | None = None) -> FastAPI:
         cur_settings: Any = request.app.state.settings
         session_factory = request.app.state.session_factory
 
+        import hashlib
+
+        token_hash = compute_token_hash(token)
+        fernet_key_fingerprint = hashlib.sha256(cur_settings.fernet_key).hexdigest()[:8]
+        log.info(
+            "confirm_page_lookup",
+            token_len=len(token),
+            token_prefix=token[:12],
+            token_hash_prefix=token_hash[:16],
+            fernet_key_fingerprint=fernet_key_fingerprint,
+        )
+
         async with session_factory() as session:
             record = await get_confirmation_by_token(session, token)
 
         # Token not in DB at all
         if record is None:
+            log.warning(
+                "confirm_page_record_not_found",
+                token_hash_prefix=token_hash[:16],
+            )
             return templates.TemplateResponse(
                 request,
                 "confirm.html",
@@ -362,7 +379,12 @@ def create_app(settings: Any | None = None) -> FastAPI:
         try:
             payload = decrypt_confirmation_token(token, cur_settings.fernet_key)
         except ToolError:
-            # Token is cryptographically expired or invalid
+            # Token is cryptographically expired or invalid (key mismatch or true expiry)
+            log.warning(
+                "confirm_page_decrypt_failed",
+                token_hash_prefix=token_hash[:16],
+                record_status=record.status if record else None,
+            )
             async with session_factory() as session:
                 rec = await get_confirmation_by_token(session, token)
                 if rec is not None and rec.status == "pending":
