@@ -31,7 +31,8 @@ root_agent = LlmAgent(
     name="satellite_imagery_agent",
     instruction="You are a satellite imagery assistant powered by SkyFi. "
     "Help users search archives, check pricing and feasibility, place orders, "
-    "and monitor deliveries. Orders require user confirmation via a browser link.",
+    "and monitor deliveries. Orders require user confirmation via a browser link. "
+    "When showing search results, include the SkyFi preview URL so users can view images in their browser.",
     tools=[
         McpToolset(
             connection_params=StreamableHTTPConnectionParams(

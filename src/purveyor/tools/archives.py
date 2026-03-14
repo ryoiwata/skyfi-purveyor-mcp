@@ -11,6 +11,7 @@ from mcp.types import ToolAnnotations
 
 from purveyor.core.errors import ErrorCode, ToolError
 from purveyor.tools._helpers import get_skyfi_client
+from purveyor.tools.preview import build_skyfi_preview_url
 
 McpContext = Context[Any, Any, Any]
 
@@ -188,6 +189,7 @@ def register(mcp: FastMCP) -> None:
         def _archive_with_url(a: Any) -> dict[str, Any]:
             d: dict[str, Any] = a.model_dump(mode="json")
             d["skyfi_url"] = f"https://app.skyfi.com/explore/archive/{a.archive_id}"
+            d["preview_url"] = build_skyfi_preview_url(a.archive_id, wkt)
             return d
 
         result: dict[str, Any] = {

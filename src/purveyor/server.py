@@ -88,10 +88,12 @@ def _register_all() -> None:
     from purveyor.tools.geospatial import register as register_geospatial
     from purveyor.tools.notifications import register as register_notifications
     from purveyor.tools.orders import register as register_orders
+    from purveyor.tools.preview import register as register_preview
     from purveyor.tools.pricing import register as register_pricing
 
     register_geospatial(mcp)
     register_archives(mcp)
+    register_preview(mcp)
     register_pricing(mcp)
     register_feasibility(mcp)
     register_orders(mcp)
