@@ -10,6 +10,7 @@ Per DESIGN_DECISIONS.md sections 1-6:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import uuid
@@ -76,6 +77,52 @@ def decrypt_confirmation_token(
             code=ErrorCode.ORDER_EXPIRED,
             message="This order confirmation has expired or is invalid.",
         ) from exc
+
+
+def fernet_to_url_token(fernet_token: str) -> str:
+    """Re-encode a Fernet token as base32 for safe embedding in URLs.
+
+    Fernet tokens are URL-safe base64 (A-Za-z0-9-_=).  The '_' character
+    causes two layers of corruption when passed through LLM-rendered Markdown:
+    1. LLMs normalize '%5F' back to '_' (RFC 3986 says unreserved chars must
+       not be percent-encoded, so they undo quote()).
+    2. Markdown renderers then strip '_..._' pairs as emphasis markers.
+
+    Base32 output (A-Z2-7, no underscores, no dashes, no equals) is immune to
+    both problems.  Gemini has no URL-normalization rule for alphanumeric-only
+    tokens, and Markdown has no special handling for A-Z2-7.
+
+    Args:
+        fernet_token: The Fernet token string (URL-safe base64 with padding).
+
+    Returns:
+        Base32-encoded string (uppercase A-Z2-7, no padding '=').
+    """
+    raw_bytes = base64.urlsafe_b64decode(fernet_token.encode())
+    return base64.b32encode(raw_bytes).decode().rstrip("=")
+
+
+def url_token_to_fernet(url_token: str) -> str:
+    """Decode a base32 URL token back to the original Fernet token string.
+
+    Inverse of fernet_to_url_token().  Case-insensitive (base32 is
+    case-insensitive by spec; uppercased before decoding).
+
+    Args:
+        url_token: Base32-encoded URL token from a /confirm/{token} path.
+
+    Returns:
+        The original Fernet token string (URL-safe base64 with padding).
+
+    Raises:
+        ValueError: If url_token is not valid base32.
+    """
+    padded = url_token.upper()
+    remainder = len(padded) % 8
+    if remainder:
+        padded += "=" * (8 - remainder)
+    raw_bytes = base64.b32decode(padded)
+    return base64.urlsafe_b64encode(raw_bytes).decode()
 
 
 def compute_token_hash(token: str) -> str:

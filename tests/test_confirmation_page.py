@@ -11,7 +11,8 @@ Tests verify:
 - Already-cancelled token → 409 Already Processed
 - POST action=confirm places the order
 - POST action=cancel cancels the order
-- Token hash is identical after URL path round-trip (no encoding corruption)
+- Base32 URL round-trip: fernet_to_url_token / url_token_to_fernet are inverse
+- Token hash is identical after base32 URL path round-trip (no encoding corruption)
 """
 
 from __future__ import annotations
@@ -104,12 +105,20 @@ def _persist_record(app: Any, token: str, status: str = "pending", order_type: s
 # ---------------------------------------------------------------------------
 
 
-def test_confirm_page_pending_renders_200(client: Any, app: Any, fernet_key: bytes) -> None:
-    """Pending token renders confirmation page with 200."""
-    token = _make_token(fernet_key)
-    _persist_record(app, token)
+def _make_url_token(fernet_key: bytes, payload: dict[str, Any] | None = None) -> tuple[str, str]:
+    """Return (fernet_token, url_token) pair for testing."""
+    from purveyor.core.confirmation import fernet_to_url_token
 
-    response = client.get(f"/confirm/{token}")
+    fernet_token = _make_token(fernet_key, payload)
+    return fernet_token, fernet_to_url_token(fernet_token)
+
+
+def test_confirm_page_pending_renders_200(client: Any, app: Any, fernet_key: bytes) -> None:
+    """Pending token renders confirmation page with 200 when URL uses base32."""
+    fernet_token, url_token = _make_url_token(fernet_key)
+    _persist_record(app, fernet_token)
+
+    response = client.get(f"/confirm/{url_token}")
 
     assert response.status_code == 200
     assert "confirm" in response.text.lower() or "$" in response.text
@@ -117,13 +126,16 @@ def test_confirm_page_pending_renders_200(client: Any, app: Any, fernet_key: byt
 
 def test_confirm_page_missing_record_returns_410(client: Any, fernet_key: bytes) -> None:
     """Token not in DB → 410 (record_not_found path)."""
-    from purveyor.core.confirmation import encrypt_confirmation_token
+    from purveyor.core.confirmation import encrypt_confirmation_token, fernet_to_url_token
 
     # Different payload → different token → no DB record for this one
-    token = encrypt_confirmation_token({"api_key": "no-record", "order_type": "ARCHIVE",
-                                        "order_params": {}, "estimated_cost_cents": 0}, fernet_key)
+    fernet_token = encrypt_confirmation_token(
+        {"api_key": "no-record", "order_type": "ARCHIVE", "order_params": {}, "estimated_cost_cents": 0},
+        fernet_key,
+    )
+    url_token = fernet_to_url_token(fernet_token)
 
-    response = client.get(f"/confirm/{token}")
+    response = client.get(f"/confirm/{url_token}")
 
     assert response.status_code == 410
     assert "expired" in response.text.lower() or "link" in response.text.lower()
@@ -133,39 +145,42 @@ def test_confirm_page_wrong_key_returns_410(client: Any, app: Any) -> None:
     """Token encrypted with wrong key → record found but decrypt fails → 410."""
     from cryptography.fernet import Fernet
 
-    from purveyor.core.confirmation import encrypt_confirmation_token
+    from purveyor.core.confirmation import encrypt_confirmation_token, fernet_to_url_token
 
     other_key = Fernet.generate_key()
-    token = encrypt_confirmation_token(
+    fernet_token = encrypt_confirmation_token(
         {"api_key": "x", "order_type": "ARCHIVE", "order_params": {}, "estimated_cost_cents": 0},
         other_key,
     )
     # Write DB record so lookup succeeds, then decrypt with app key (mismatch)
-    _persist_record(app, token)
+    _persist_record(app, fernet_token)
+    url_token = fernet_to_url_token(fernet_token)
 
-    response = client.get(f"/confirm/{token}")
+    response = client.get(f"/confirm/{url_token}")
 
     assert response.status_code == 410
 
 
 def test_confirm_page_placed_returns_409(client: Any, app: Any, fernet_key: bytes) -> None:
     """Already-placed token → 409."""
-    token = _make_token(fernet_key, {"api_key": "placed-key", "order_type": "ARCHIVE",
-                                      "order_params": {}, "estimated_cost_cents": 0})
-    _persist_record(app, token, status="placed")
+    fernet_token, url_token = _make_url_token(
+        fernet_key, {"api_key": "placed-key", "order_type": "ARCHIVE", "order_params": {}, "estimated_cost_cents": 0}
+    )
+    _persist_record(app, fernet_token, status="placed")
 
-    response = client.get(f"/confirm/{token}")
+    response = client.get(f"/confirm/{url_token}")
 
     assert response.status_code == 409
 
 
 def test_confirm_page_cancelled_returns_409(client: Any, app: Any, fernet_key: bytes) -> None:
     """Already-cancelled token → 409."""
-    token = _make_token(fernet_key, {"api_key": "cancelled-key", "order_type": "ARCHIVE",
-                                      "order_params": {}, "estimated_cost_cents": 0})
-    _persist_record(app, token, status="cancelled")
+    fernet_token, url_token = _make_url_token(
+        fernet_key, {"api_key": "cancelled-key", "order_type": "ARCHIVE", "order_params": {}, "estimated_cost_cents": 0}
+    )
+    _persist_record(app, fernet_token, status="cancelled")
 
-    response = client.get(f"/confirm/{token}")
+    response = client.get(f"/confirm/{url_token}")
 
     assert response.status_code == 409
 
@@ -177,11 +192,12 @@ def test_confirm_page_cancelled_returns_409(client: Any, app: Any, fernet_key: b
 
 def test_post_cancel_returns_cancelled_page(client: Any, app: Any, fernet_key: bytes) -> None:
     """POST action=cancel → 200 cancelled page."""
-    token = _make_token(fernet_key, {"api_key": "cancel-me", "order_type": "ARCHIVE",
-                                      "order_params": {}, "estimated_cost_cents": 0})
-    _persist_record(app, token)
+    fernet_token, url_token = _make_url_token(
+        fernet_key, {"api_key": "cancel-me", "order_type": "ARCHIVE", "order_params": {}, "estimated_cost_cents": 0}
+    )
+    _persist_record(app, fernet_token)
 
-    response = client.post(f"/confirm/{token}", data={"action": "cancel"})
+    response = client.post(f"/confirm/{url_token}", data={"action": "cancel"})
 
     assert response.status_code == 200
     assert "cancel" in response.text.lower()
@@ -208,8 +224,8 @@ def test_post_confirm_places_tasking_order(client: Any, app: Any, fernet_key: by
         },
         "estimated_cost_cents": 42500,
     }
-    token = _make_token(fernet_key, payload)
-    _persist_record(app, token, order_type="TASKING")
+    fernet_token, url_token = _make_url_token(fernet_key, payload)
+    _persist_record(app, fernet_token, order_type="TASKING")
 
     with patch("purveyor.core.confirmation.SkyFiClient") as mock_cls:
         mock_instance = AsyncMock()
@@ -217,7 +233,7 @@ def test_post_confirm_places_tasking_order(client: Any, app: Any, fernet_key: by
         mock_instance.close = AsyncMock()
         mock_cls.return_value = mock_instance
 
-        response = client.post(f"/confirm/{token}", data={"action": "confirm"})
+        response = client.post(f"/confirm/{url_token}", data={"action": "confirm"})
 
     assert response.status_code == 200
     # Success page should mention the order ID or "confirmed"
@@ -225,60 +241,56 @@ def test_post_confirm_places_tasking_order(client: Any, app: Any, fernet_key: by
 
 
 # ---------------------------------------------------------------------------
-# URL path round-trip — proves the token hash is identical before/after HTTP
+# Base32 round-trip tests — fernet_to_url_token / url_token_to_fernet are inverse
 # ---------------------------------------------------------------------------
 
 
-def test_token_hash_identical_after_url_path_round_trip(client: Any, app: Any, fernet_key: bytes) -> None:
-    """The token extracted from the URL path produces the same SHA-256 hash as the original.
+def test_base32_round_trip_is_lossless(fernet_key: bytes) -> None:
+    """fernet_to_url_token followed by url_token_to_fernet returns the original Fernet token."""
+    from purveyor.core.confirmation import fernet_to_url_token, url_token_to_fernet
 
-    This verifies that URL encoding/decoding by the browser/ALB/Starlette does not
-    corrupt the token, causing hash mismatches in the DB lookup.
-    """
-    from purveyor.core.confirmation import compute_token_hash
+    fernet_token = _make_token(fernet_key)
+    url_token = fernet_to_url_token(fernet_token)
 
-    token = _make_token(fernet_key, {"api_key": "roundtrip-key", "order_type": "ARCHIVE",
-                                      "order_params": {}, "estimated_cost_cents": 0})
-    expected_hash = compute_token_hash(token)
-    captured: dict[str, str] = {}
+    # URL token must contain only A-Z2-7 (no underscores, dashes, equals)
+    assert all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567" for c in url_token), (
+        f"URL token contains characters outside A-Z2-7: {url_token!r}"
+    )
 
-    import purveyor.core.confirmation as conf_module
-    original_fn = conf_module.compute_token_hash
-
-    def capturing_hash(t: str) -> str:
-        h = original_fn(t)
-        captured["hash"] = h
-        return h
-
-    with patch.object(conf_module, "compute_token_hash", side_effect=capturing_hash):
-        client.get(f"/confirm/{token}")
-
-    assert "hash" in captured, "compute_token_hash was never called during the request"
-    assert captured["hash"] == expected_hash, (
-        f"Token hash mismatch after URL path round-trip!\n"
-        f"  Before HTTP: {expected_hash}\n"
-        f"  After HTTP:  {captured['hash']}\n"
-        f"  Token length: {len(token)}\n"
-        f"  Token suffix: ...{token[-10:]!r}"
+    recovered = url_token_to_fernet(url_token)
+    assert recovered == fernet_token, (
+        f"Round-trip failed:\n  original: {fernet_token!r}\n  recovered: {recovered!r}"
     )
 
 
-def test_token_hash_identical_after_percent_encoded_url_path(client: Any, app: Any, fernet_key: bytes) -> None:
-    """Token percent-encoded in URL path (as orders.py now builds it) decodes correctly.
+def test_base32_url_token_case_insensitive(fernet_key: bytes) -> None:
+    """url_token_to_fernet handles lowercase base32 (e.g., if Gemini lowercases the URL)."""
+    from purveyor.core.confirmation import fernet_to_url_token, url_token_to_fernet
 
-    Fernet tokens contain '_' and '=' which markdown renderers may corrupt when
-    displayed as raw text.  The fix is to percent-encode the token in the URL so
-    it contains only alphanumerics and '%'.  Starlette must URL-decode the path
-    param and produce the same hash as the original token.
+    fernet_token = _make_token(fernet_key, {"api_key": "case-test", "order_type": "ARCHIVE",
+                                             "order_params": {}, "estimated_cost_cents": 0})
+    url_token = fernet_to_url_token(fernet_token).lower()  # simulate Gemini lowercasing
+
+    recovered = url_token_to_fernet(url_token)
+    assert recovered == fernet_token
+
+
+def test_token_hash_identical_after_base32_url_path_round_trip(
+    client: Any, app: Any, fernet_key: bytes
+) -> None:
+    """Token hash is identical before and after base32 URL path round-trip.
+
+    This is the critical regression test: verifies that the DB lookup finds the
+    record after the URL token has been encoded by fernet_to_url_token() and
+    decoded by url_token_to_fernet() inside the request handler.
     """
-    from urllib.parse import quote
+    from purveyor.core.confirmation import compute_token_hash, fernet_to_url_token
 
-    from purveyor.core.confirmation import compute_token_hash
-
-    token = _make_token(fernet_key, {"api_key": "pct-encode-key", "order_type": "ARCHIVE",
-                                      "order_params": {}, "estimated_cost_cents": 0})
-    expected_hash = compute_token_hash(token)
-    encoded_token = quote(token, safe="")
+    fernet_token, url_token = _make_url_token(
+        fernet_key, {"api_key": "roundtrip-base32", "order_type": "ARCHIVE",
+                     "order_params": {}, "estimated_cost_cents": 0}
+    )
+    expected_hash = compute_token_hash(fernet_token)
     captured: dict[str, str] = {}
 
     import purveyor.core.confirmation as conf_module
@@ -289,15 +301,16 @@ def test_token_hash_identical_after_percent_encoded_url_path(client: Any, app: A
         captured["hash"] = h
         return h
 
-    _persist_record(app, token)
+    _persist_record(app, fernet_token)
 
     with patch.object(conf_module, "compute_token_hash", side_effect=capturing_hash):
-        response = client.get(f"/confirm/{encoded_token}")
+        response = client.get(f"/confirm/{url_token}")
 
     assert "hash" in captured, "compute_token_hash was never called during the request"
     assert captured["hash"] == expected_hash, (
-        f"Token hash mismatch after percent-encoded URL path round-trip!\n"
+        f"Token hash mismatch after base32 URL path round-trip!\n"
         f"  Before HTTP: {expected_hash}\n"
         f"  After HTTP:  {captured['hash']}\n"
+        f"  URL token (first 20): {url_token[:20]!r}\n"
     )
     assert response.status_code == 200

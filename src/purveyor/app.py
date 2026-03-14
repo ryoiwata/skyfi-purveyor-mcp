@@ -299,20 +299,34 @@ def create_app(settings: Any | None = None) -> FastAPI:
 
     @app.get("/confirm/{token}", response_class=HTMLResponse)
     async def get_confirmation_page(request: Request, token: str) -> HTMLResponse:
-        """Render the order confirmation page for a given Fernet token.
+        """Render the order confirmation page for a given base32-encoded token.
 
-        Decrypts the token to extract order details, then looks up the
-        confirmation record in the DB to determine the current state.
+        The URL token is base32-encoded (A-Z2-7) to survive LLM URL normalization
+        and Markdown rendering without corruption.  Decodes to the original Fernet
+        token before DB lookup and decryption.
         """
         from purveyor.core.confirmation import (
             compute_token_hash,
             decrypt_confirmation_token,
             get_confirmation_by_token,
+            url_token_to_fernet,
         )
         from purveyor.core.errors import ToolError
 
         cur_settings: Any = request.app.state.settings
         session_factory = request.app.state.session_factory
+
+        # Decode base32 URL token → original Fernet token
+        try:
+            token = url_token_to_fernet(token)
+        except Exception:
+            log.warning("confirm_page_invalid_url_token")
+            return templates.TemplateResponse(
+                request,
+                "confirm.html",
+                {"state": "expired", "error_message": "This order link is invalid or has expired."},
+                status_code=410,
+            )
 
         import hashlib
 
@@ -442,13 +456,30 @@ def create_app(settings: Any | None = None) -> FastAPI:
         """Handle confirm or cancel POST from the confirmation page form.
 
         The form sends `action=confirm` or `action=cancel`.
+        The URL token is base32-encoded; decoded to Fernet token before use.
         """
-        from purveyor.core.confirmation import cancel_confirmation, confirm_order
+        from purveyor.core.confirmation import (
+            cancel_confirmation,
+            confirm_order,
+            url_token_to_fernet,
+        )
         from purveyor.core.errors import ErrorCode, ToolError
 
         cur_settings: Any = request.app.state.settings
         session_factory = request.app.state.session_factory
         use_skip_locked: bool = request.app.state.use_skip_locked
+
+        # Decode base32 URL token → original Fernet token
+        try:
+            token = url_token_to_fernet(token)
+        except Exception:
+            log.warning("confirm_post_invalid_url_token")
+            return templates.TemplateResponse(
+                request,
+                "confirm.html",
+                {"state": "expired"},
+                status_code=410,
+            )
 
         if action == "cancel":
             from purveyor.core.confirmation import get_confirmation_by_token

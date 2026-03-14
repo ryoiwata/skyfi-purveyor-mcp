@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import uuid
 from typing import Any
-from urllib.parse import quote
 
 import structlog
 from mcp.server.fastmcp import Context, FastMCP
@@ -294,6 +293,7 @@ def register(mcp: FastMCP) -> None:
             compute_token_hash,
             create_confirmation,
             encrypt_confirmation_token,
+            fernet_to_url_token,
         )
         from purveyor.core.skyfi_types import (
             AzureDeliveryParams,
@@ -443,7 +443,7 @@ def register(mcp: FastMCP) -> None:
 
         # Build confirmation URL
         base = (settings.confirmation_base_url or f"http://localhost:{settings.server_port}").rstrip("/")
-        confirmation_url = f"{base}/confirm/{quote(token, safe='')}"
+        confirmation_url = f"{base}/confirm/{fernet_to_url_token(token)}"
 
         cost_str = f"${estimated_cost_cents / 100:.2f}"
         area_str = f"{aoi_area_sq_km:.1f} sq km" if aoi_area_sq_km else "unknown area"
@@ -513,6 +513,7 @@ def register(mcp: FastMCP) -> None:
             compute_token_hash,
             create_confirmation,
             encrypt_confirmation_token,
+            fernet_to_url_token,
         )
         from purveyor.core.skyfi_types import (
             ArchiveOrderRequest,
@@ -611,7 +612,7 @@ def register(mcp: FastMCP) -> None:
             ).to_call_tool_result()
 
         base = (settings.confirmation_base_url or f"http://localhost:{settings.server_port}").rstrip("/")
-        confirmation_url = f"{base}/confirm/{quote(token, safe='')}"
+        confirmation_url = f"{base}/confirm/{fernet_to_url_token(token)}"
 
         cost_str = f"${estimated_cost_cents / 100:.2f}"
         provider = getattr(archive, "provider", "unknown")
