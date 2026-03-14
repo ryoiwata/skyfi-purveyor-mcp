@@ -204,4 +204,4 @@ adk web --no-reload
 - **Stdio mode + HTTP confirmations:** Both the stdio subprocess and the HTTP server must use the same `CONFIRMATION_SECRET_KEY`. Generate one with `uv run purveyor generate-key`.
 - **structlog in stdio mode:** Purveyor writes logs to stderr by default, which prevents contaminating the MCP JSON-RPC stream on stdout. Do not redirect stderr or change `LOG_FORMAT` to anything that writes to stdout.
 - **ADK version:** This agent was written against google-adk 0.2.0+. The `McpToolset` API and connection parameter classes may differ in earlier or later versions.
-- **Model choice:** `gemini-2.0-flash` is the default. You can change it to `gemini-2.5-pro` or any available Gemini model for better reasoning on complex multi-step tasks.
+- **Model choice:** `gemini-2.5-flash` is the default. Override via `GEMINI_MODEL` in `.env` (e.g. `gemini-2.5-pro`). If you get a 429 with `limit: 0`, the model has no free-tier quota on your API key — try a different model or enable billing.

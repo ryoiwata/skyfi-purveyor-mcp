@@ -22,9 +22,10 @@ load_dotenv()
 
 PURVEYOR_URL = os.environ.get("PURVEYOR_URL", "http://localhost:8000")
 SKYFI_API_KEY = os.environ.get("SKYFI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 root_agent = LlmAgent(
-    model="gemini-2.0-flash",
+    model=GEMINI_MODEL,
     name="satellite_imagery_agent",
     instruction="""You are a satellite imagery assistant powered by SkyFi via Purveyor.
 You can help users:
