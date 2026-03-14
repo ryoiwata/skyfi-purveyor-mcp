@@ -16,7 +16,7 @@ This agent uses ADK's `McpToolset` to connect to Purveyor's `/mcp` endpoint and 
 
 - Python 3.11+ (Purveyor requires 3.11; ADK requires 3.9+)
 - [google-adk](https://pypi.org/project/google-adk/) installed: `pip install google-adk python-dotenv`
-- A [Gemini API key](https://aistudio.google.com/apikey) (`GOOGLE_GENAI_API_KEY`)
+- A [Gemini API key](https://aistudio.google.com/apikey) (`GOOGLE_API_KEY`)
 - A [SkyFi API key](https://app.skyfi.com) (`SKYFI_API_KEY`)
 - Purveyor running (see below)
 
@@ -26,7 +26,7 @@ This agent uses ADK's `McpToolset` to connect to Purveyor's `/mcp` endpoint and 
 
 ```bash
 cp .env.example .env
-# Edit .env and set GOOGLE_GENAI_API_KEY, SKYFI_API_KEY
+# Edit .env and set GOOGLE_API_KEY, SKYFI_API_KEY
 ```
 
 **Step 2:** Start Purveyor (from the project root):

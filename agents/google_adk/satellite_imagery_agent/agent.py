@@ -3,7 +3,7 @@ Google ADK agent — Option A: SSE/HTTP connection to a running Purveyor server.
 
 Prerequisites:
   pip install google-adk python-dotenv
-  cp .env.example .env  # fill in GOOGLE_GENAI_API_KEY, SKYFI_API_KEY, PURVEYOR_URL
+  cp .env.example .env  # fill in GOOGLE_API_KEY, SKYFI_API_KEY, PURVEYOR_URL
 
 Usage:
   cd agents/google_adk
