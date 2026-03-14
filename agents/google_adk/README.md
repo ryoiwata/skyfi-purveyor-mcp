@@ -8,8 +8,8 @@ This agent uses ADK's `McpToolset` to connect to Purveyor's `/mcp` endpoint and 
 
 | Option | File | When to use |
 |--------|------|-------------|
-| A (SSE/HTTP) | `agent.py` | Development + demos — full `adk web` UI |
-| B (Stdio) | `agent_stdio.py` | Embedded mode — Purveyor runs as subprocess |
+| A (SSE/HTTP) | `satellite_imagery_agent/agent.py` | Development + demos — full `adk web` UI |
+| B (Stdio) | `satellite_imagery_agent/agent_stdio.py` | Embedded mode — Purveyor runs as subprocess |
 | C (Programmatic) | `test_programmatic.py` | Scripted tests — no browser UI needed |
 
 ## Prerequisites
@@ -40,10 +40,12 @@ uv run purveyor serve --local
 
 ```bash
 cd agents/google_adk
-adk web
+uv run adk web --port 8080
+# Or against the AWS deployment:
+PURVEYOR_URL=http://purveyor-691022321.us-east-1.elb.amazonaws.com uv run adk web --port 8080
 ```
 
-**Step 4:** Open `http://localhost:8080` (ADK's default port), select `satellite_imagery_agent`, and start chatting.
+**Step 4:** Open `http://localhost:8080`, select `satellite_imagery_agent` from the dropdown, and start chatting.
 
 ### Example prompts
 
@@ -59,11 +61,11 @@ Who am I? (verify your SkyFi account)
 
 Purveyor runs as a subprocess instead of a separate HTTP server.
 
-**Step 1:** Rename `agent_stdio.py` to `agent.py` (save the original as `agent_sse.py`), OR update `__init__.py`:
+**Step 1:** Update `satellite_imagery_agent/__init__.py` to import the stdio agent:
 
 ```python
-# __init__.py
-from . import agent_stdio as agent  # use stdio instead
+# satellite_imagery_agent/__init__.py
+from . import agent_stdio as agent  # use stdio instead of HTTP
 ```
 
 **Step 2:** Run `adk web` as normal.
@@ -84,11 +86,13 @@ from . import agent_stdio as agent  # use stdio instead
 Run queries without `adk web` — useful for smoke testing or CI:
 
 ```bash
-# Purveyor must be running first
+# Purveyor must be running first (or set PURVEYOR_URL to remote instance)
 uv run purveyor serve --local &
 
 cd agents/google_adk
-python test_programmatic.py
+uv run python test_programmatic.py
+# Or against the AWS deployment:
+PURVEYOR_URL=http://purveyor-691022321.us-east-1.elb.amazonaws.com uv run python test_programmatic.py
 ```
 
 The script fires three queries and prints responses:
@@ -176,20 +180,6 @@ uv run purveyor serve --local
 ### Confirmation links don't work
 
 If you're using stdio mode, the HTTP server is not running. Start a separate Purveyor HTTP instance on the same port that confirmation URLs point to (default `http://localhost:8000`).
-
-### `ImportError: cannot import name 'SseConnectionParams'`
-
-Your google-adk version may use a different import path. Try:
-
-```python
-# Newer ADK versions may use:
-from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-
-# And replace SseConnectionParams with:
-StreamableHTTPConnectionParams(url=f"{PURVEYOR_URL}/mcp", headers=...)
-```
-
-Check your installed version: `pip show google-adk`
 
 ### `ModuleNotFoundError: No module named 'google.adk'`
 
