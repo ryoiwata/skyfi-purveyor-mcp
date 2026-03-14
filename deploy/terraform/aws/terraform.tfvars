@@ -4,7 +4,7 @@ acm_certificate_arn = ""
 
 # Your ECR image
 image_repository = "496780244141.dkr.ecr.us-east-1.amazonaws.com/purveyor"
-image_tag        = "v1.1.8"
+image_tag        = "v1.1.9"
 
 # AWS region
 region = "us-east-1"
