@@ -525,8 +525,16 @@ class TaskingOrderRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     def model_dump_skyfi(self) -> dict[str, Any]:
-        """Serialize for SkyFi API."""
-        return self.model_dump(by_alias=True, exclude_none=True, mode="json")
+        """Serialize for SkyFi API.
+
+        Omits deliveryDriver/deliveryParams when driver is NONE — SkyFi's API
+        does not accept "NONE" as a driver value; the field must be absent.
+        """
+        data = self.model_dump(by_alias=True, exclude_none=True, mode="json")
+        if data.get("deliveryDriver") == "NONE":
+            data.pop("deliveryDriver", None)
+            data.pop("deliveryParams", None)
+        return data
 
 
 class ArchiveOrderRequest(BaseModel):
@@ -544,8 +552,16 @@ class ArchiveOrderRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     def model_dump_skyfi(self) -> dict[str, Any]:
-        """Serialize for SkyFi API."""
-        return self.model_dump(by_alias=True, exclude_none=True, mode="json")
+        """Serialize for SkyFi API.
+
+        Omits deliveryDriver/deliveryParams when driver is NONE — SkyFi's API
+        does not accept "NONE" as a driver value; the field must be absent.
+        """
+        data = self.model_dump(by_alias=True, exclude_none=True, mode="json")
+        if data.get("deliveryDriver") == "NONE":
+            data.pop("deliveryDriver", None)
+            data.pop("deliveryParams", None)
+        return data
 
 
 class TaskingOrderResponse(BaseModel):
