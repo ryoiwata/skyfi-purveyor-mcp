@@ -585,23 +585,27 @@ def register(mcp: FastMCP) -> None:
         except Exception as area_exc:
             log.warning("archive_area_calc_failed", error=str(area_exc))
 
-        # Validate AOI size against SkyFi order limits before creating the token
-        if aoi_area_sq_km > SKYFI_MAX_AOI_KM2:
+        # Validate AOI size against THIS archive's own min/max limits (per-archive,
+        # not a global constant — SkyFi reports them in the error as min <= actual <= max).
+        archive_min = archive.min_sq_km
+        archive_max = archive.max_sq_km
+        if aoi_area_sq_km > archive_max:
             return ToolError(
                 code=ErrorCode.AOI_TOO_LARGE,
                 message=(
-                    f"AOI too large ({aoi_area_sq_km:.1f} km²). SkyFi maximum for orders is "
-                    f"{SKYFI_MAX_AOI_KM2:,.0f} km². Try creating a smaller AOI using "
-                    "create_aoi_from_point with a smaller radius, or geocode a more specific location."  # noqa: E501
+                    f"AOI too large ({aoi_area_sq_km:.1f} km²). "
+                    f"This archive supports a maximum of {archive_max:.0f} km². "
+                    "Try create_aoi_from_point with a smaller radius, "
+                    "or geocode a more specific location."
                 ),
             ).to_call_tool_result()
-        if 0 < aoi_area_sq_km < SKYFI_MIN_AOI_KM2:
+        if 0 < aoi_area_sq_km < archive_min:
             return ToolError(
                 code=ErrorCode.INVALID_INPUT,
                 message=(
-                    f"AOI too small ({aoi_area_sq_km:.1f} km²). SkyFi minimum for orders is "
-                    f"{SKYFI_MIN_AOI_KM2} km². Try creating a larger AOI using "
-                    "create_aoi_from_point with a bigger radius."
+                    f"AOI too small ({aoi_area_sq_km:.1f} km²). "
+                    f"This archive requires a minimum of {archive_min:.0f} km². "
+                    "Try create_aoi_from_point with a bigger radius."
                 ),
             ).to_call_tool_result()
 

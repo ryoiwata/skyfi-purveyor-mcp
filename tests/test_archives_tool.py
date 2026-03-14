@@ -88,16 +88,18 @@ async def test_search_archives_with_wkt_returns_results() -> None:
     assert result["total"] == 3
     assert len(result["archives"]) == 3
     assert "Found 3 archives" in result["summary"]
-    # Each archive must have a skyfi_url
+    # Each archive must have preview_url (crop viewer with AOI); skyfi_url is NOT included
+    # in search results to avoid the agent using the wrong URL format.
     for archive in result["archives"]:
-        assert "skyfi_url" in archive
-        assert archive["skyfi_url"].startswith("https://app.skyfi.com/explore/archive/")
-        assert archive["archive_id"] in archive["skyfi_url"]
+        assert "preview_url" in archive
+        assert "/explore/open/crop/" in archive["preview_url"]
+        assert archive["archive_id"] in archive["preview_url"]
+        assert "skyfi_url" not in archive
 
 
 @pytest.mark.asyncio
-async def test_get_archive_details_includes_skyfi_url() -> None:
-    """get_archive_details includes skyfi_url in response and summary."""
+async def test_get_archive_details_includes_preview_url() -> None:
+    """get_archive_details includes preview_url built from the archive footprint."""
     archive = _make_archive()
     cached_client = MagicMock()
     cached_client.get_archive = AsyncMock(return_value=archive)
@@ -106,9 +108,10 @@ async def test_get_archive_details_includes_skyfi_url() -> None:
     result = await tool_fn(archive_id=ARCHIVE_ID, ctx=_make_ctx(cached_client))
 
     assert isinstance(result, dict)
-    expected_url = f"https://app.skyfi.com/explore/archive/{ARCHIVE_ID}"
-    assert result["skyfi_url"] == expected_url
-    assert expected_url in result["summary"]
+    assert "preview_url" in result
+    assert f"/explore/open/crop/{ARCHIVE_ID}" in result["preview_url"]
+    assert "aoi=POLYGON" in result["preview_url"]
+    assert result["preview_url"] in result["summary"]
 
 
 @pytest.mark.asyncio

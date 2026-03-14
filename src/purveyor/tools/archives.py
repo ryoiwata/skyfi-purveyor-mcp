@@ -203,7 +203,9 @@ def register(mcp: FastMCP) -> None:
 
         def _archive_with_url(a: Any) -> dict[str, Any]:
             d: dict[str, Any] = a.model_dump(mode="json")
-            d["skyfi_url"] = f"https://app.skyfi.com/explore/archive/{a.archive_id}"
+            # preview_url is the correct URL for viewing the image with the search AOI
+            # overlaid; /explore/archive/{id} is a detail page that does not work for
+            # all providers (e.g. Sentinel) — expose only preview_url to avoid confusion.
             d["preview_url"] = build_skyfi_preview_url(a.archive_id, wkt)
             return d
 
@@ -246,15 +248,18 @@ def register(mcp: FastMCP) -> None:
                 message=f"Failed to fetch archive {archive_id}: {exc}",
             ).to_call_tool_result()
 
-        skyfi_url = f"https://app.skyfi.com/explore/archive/{archive_id}"
+        # preview_url uses the archive's own footprint as the AOI so the crop viewer
+        # shows the full scene extent.
+        preview_url = build_skyfi_preview_url(archive_id, archive.footprint)
         return {
             "archive": archive.model_dump(mode="json"),
-            "skyfi_url": skyfi_url,
+            "preview_url": preview_url,
             "summary": (
                 f"Archive {archive_id}: {archive.provider} {archive.resolution} "
                 f"captured {archive.capture_timestamp.date()}. "
                 f"Cloud cover: {archive.cloud_coverage_percent or 'N/A'}%. "
                 f"Price: ${archive.price_full_scene:.0f}/scene. "
-                f"View on SkyFi: {skyfi_url}"
+                f"AOI limits: {archive.min_sq_km}-{archive.max_sq_km} km². "
+                f"Preview: {preview_url}"
             ),
         }
