@@ -242,7 +242,10 @@ resource "random_bytes" "fernet_key" {
 resource "aws_ssm_parameter" "confirmation_secret_key" {
   name  = "/${local.name}/CONFIRMATION_SECRET_KEY"
   type  = "SecureString"
-  value = base64encode(random_bytes.fernet_key.base64)
+  # random_bytes.fernet_key.base64 is already the URL-safe base64 encoding of 32
+  # random bytes — exactly what Fernet requires.  Do NOT wrap in base64encode()
+  # again; that produces double-encoded output that Fernet rejects at startup.
+  value = random_bytes.fernet_key.base64
   lifecycle {
     ignore_changes = [value]
   }

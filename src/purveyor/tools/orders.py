@@ -12,7 +12,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from purveyor.core.errors import ErrorCode, ToolError
-from purveyor.tools._helpers import get_skyfi_client
+from purveyor.tools._helpers import get_api_key_from_ctx, get_skyfi_client
 
 McpContext = Context[Any, Any, Any]
 
@@ -403,10 +403,9 @@ def register(mcp: FastMCP) -> None:
             metadata=metadata,
         )
 
-        # Build payload for Fernet token
-        api_key = settings.skyfi_api_key or ""
-        # NOTE: In cloud mode, the per-request API key should come from the request
-        # auth context. For now, local mode uses settings.skyfi_api_key.
+        # Build payload for Fernet token — must use the per-request API key so the
+        # confirmation handler can place the order under the correct account.
+        api_key = get_api_key_from_ctx(ctx)
         token_payload = {
             "api_key": api_key,
             "order_type": "TASKING",
@@ -559,7 +558,7 @@ def register(mcp: FastMCP) -> None:
             metadata=metadata,
         )
 
-        api_key = settings.skyfi_api_key or ""
+        api_key = get_api_key_from_ctx(ctx)
         token_payload = {
             "api_key": api_key,
             "order_type": "ARCHIVE",

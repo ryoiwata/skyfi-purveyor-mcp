@@ -9,6 +9,26 @@ from purveyor.core.cache import CachedSkyFiClient
 McpContext = Any  # Context[Any, Any, Any] — avoid circular imports
 
 
+def get_api_key_from_ctx(ctx: McpContext) -> str:
+    """Extract the SkyFi API key for the current request.
+
+    In local mode, returns the server-configured key from Settings.
+    In cloud mode, reads the X-Skyfi-Api-Key HTTP request header.
+    """
+    from typing import Any
+
+    lc: dict[str, Any] = ctx.request_context.lifespan_context
+    settings = lc["settings"]
+
+    if settings.local_mode:
+        return settings.skyfi_api_key or ""
+
+    http_request = ctx.request_context.request
+    if http_request is not None:
+        return http_request.headers.get("x-skyfi-api-key", "")
+    return ""
+
+
 def get_skyfi_client(ctx: McpContext) -> CachedSkyFiClient:
     """Return an authenticated CachedSkyFiClient for this request.
 
