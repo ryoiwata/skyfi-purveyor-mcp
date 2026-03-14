@@ -45,12 +45,20 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     client = SkyFiClient(api_key=api_key)
     cached_client = CachedSkyFiClient(client, cache)
 
+    def make_client(key: str) -> CachedSkyFiClient:
+        """Create a per-request CachedSkyFiClient with the given API key.
+
+        Used in cloud mode to build a client from the X-Skyfi-Api-Key header.
+        """
+        return CachedSkyFiClient(SkyFiClient(api_key=key), cache)
+
     log.info("purveyor_ready")
 
     try:
         yield {
             "settings": settings,
             "cached_client": cached_client,
+            "make_client": make_client,
             "cache": cache,
             "session_factory": session_factory,
         }

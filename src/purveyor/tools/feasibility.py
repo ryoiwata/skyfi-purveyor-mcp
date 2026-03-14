@@ -16,6 +16,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from purveyor.core.errors import ErrorCode, ToolError
+from purveyor.tools._helpers import get_skyfi_client
 
 McpContext = Context[Any, Any, Any]
 
@@ -68,10 +69,9 @@ def register(mcp: FastMCP) -> None:
             feasibility_id: Existing feasibility task ID (for check mode).
         """
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
         settings = lc["settings"]
         cache = lc["cache"]
-
 
         # ---- CHECK MODE: feasibility_id provided ----
         if feasibility_id:
@@ -223,7 +223,7 @@ def register(mcp: FastMCP) -> None:
         """
         log.info("tool_get_pass_predictions", location=location[:50])
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
         settings = lc["settings"]
         cache = lc["cache"]
 

@@ -12,6 +12,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from purveyor.core.errors import ErrorCode, ToolError
+from purveyor.tools._helpers import get_skyfi_client
 
 McpContext = Context[Any, Any, Any]
 
@@ -47,7 +48,7 @@ def register(mcp: FastMCP) -> None:
         """
         log.info("tool_list_orders", order_type=order_type)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         from purveyor.core.skyfi_types import OrderType, SortColumn, SortDirection
 
@@ -145,8 +146,7 @@ def register(mcp: FastMCP) -> None:
             order_id: The order UUID.
         """
         log.info("tool_get_order_status", order_id=order_id)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         try:
             order = await cached_client.get_order(order_id)
@@ -208,8 +208,7 @@ def register(mcp: FastMCP) -> None:
             deliverable_type: Deliverable type — image, payload, or cog.
         """
         log.info("tool_download_deliverable", order_id=order_id, deliverable_type=deliverable_type)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         from purveyor.core.skyfi_types import DeliverableType
 
@@ -286,7 +285,7 @@ def register(mcp: FastMCP) -> None:
         """
         log.info("tool_create_tasking_order", location=location[:50], product_type=product_type)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
         settings = lc["settings"]
         session_factory = lc["session_factory"]
         cache = lc["cache"]
@@ -489,7 +488,7 @@ def register(mcp: FastMCP) -> None:
         """
         log.info("tool_create_archive_order", archive_id=archive_id)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
         settings = lc["settings"]
         session_factory = lc["session_factory"]
 
@@ -680,7 +679,7 @@ def register(mcp: FastMCP) -> None:
         """
         log.info("tool_request_redelivery", order_id=order_id, delivery_driver=delivery_driver)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         from purveyor.core.skyfi_types import (
             AzureDeliveryParams,

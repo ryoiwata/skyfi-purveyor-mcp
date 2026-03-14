@@ -10,6 +10,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from purveyor.core.errors import ErrorCode, ToolError
+from purveyor.tools._helpers import get_skyfi_client
 
 McpContext = Context[Any, Any, Any]
 
@@ -60,7 +61,7 @@ def register(mcp: FastMCP) -> None:
         """
         log.info("tool_search_archives", location=location[:50])
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
         settings = lc["settings"]
         cache = lc["cache"]
 
@@ -216,8 +217,7 @@ def register(mcp: FastMCP) -> None:
             archive_id: The archive UUID from a previous search_archives call.
         """
         log.info("tool_get_archive_details", archive_id=archive_id)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         try:
             archive = await cached_client.get_archive(archive_id)

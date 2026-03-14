@@ -11,6 +11,7 @@ from mcp.types import ToolAnnotations
 from sqlalchemy import select
 
 from purveyor.core.errors import ErrorCode, ToolError
+from purveyor.tools._helpers import get_skyfi_client
 
 McpContext = Context[Any, Any, Any]
 
@@ -52,7 +53,7 @@ def register(mcp: FastMCP) -> None:
         """
         log.info("tool_setup_monitoring", location=location[:50])
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
         settings = lc["settings"]
         cache = lc["cache"]
 
@@ -177,8 +178,7 @@ def register(mcp: FastMCP) -> None:
             page_size: Results per page (1-100).
         """
         log.info("tool_list_notifications")
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         try:
             resp = await cached_client.list_notifications(
@@ -224,8 +224,7 @@ def register(mcp: FastMCP) -> None:
             notification_id: The notification UUID.
         """
         log.info("tool_get_notification_history", notification_id=notification_id)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         try:
             notification = await cached_client.get_notification(notification_id)
@@ -267,7 +266,7 @@ def register(mcp: FastMCP) -> None:
         """
         log.info("tool_delete_notification", notification_id=notification_id)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         try:
             resp = await cached_client.delete_notification(notification_id)
