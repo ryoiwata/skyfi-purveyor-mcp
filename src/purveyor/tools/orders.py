@@ -123,8 +123,17 @@ def register(mcp: FastMCP) -> None:
                     f"Most recent: {order_type_name} order created {latest_date.date()}."
                 )
 
+        def _order_with_web_url(o: Any) -> dict[str, Any]:
+            d: dict[str, Any] = o.model_dump(mode="json")
+            oid = d.get("order_id") or d.get("id") or str(getattr(o, "order_id", ""))
+            # skyfi_order_url is the SkyFi web-app URL for viewing the order in a browser.
+            # download_image_url (from API) is an authenticated API endpoint and must NOT
+            # be given to users as a clickable link — it requires X-Skyfi-Api-Key headers.
+            d["skyfi_order_url"] = f"https://app.skyfi.com/orders/{oid}" if oid else None
+            return d
+
         return {
-            "orders": [o.model_dump(mode="json") for o in orders],
+            "orders": [_order_with_web_url(o) for o in orders],
             "total": total,
             "page": page,
             "summary": " ".join(summary_parts),
@@ -166,30 +175,44 @@ def register(mcp: FastMCP) -> None:
         cost_cents = getattr(order, "order_cost", None)
         created_at = getattr(order, "created_at", None)
 
-        # Collect download URLs for completed orders
-        download_urls: dict[str, str | None] = {}
+        # skyfi_order_url: web-app URL for viewing the order in a browser (no auth needed).
+        # download_image_url from the API is an authenticated API endpoint — NOT a browser URL.
+        skyfi_order_url = f"https://app.skyfi.com/orders/{order_id}"
+
+        # api_download_endpoints: internal API paths (require X-Skyfi-Api-Key header).
+        # These are exposed for informational purposes only — agents should use
+        # download_deliverable to get a time-limited signed URL for actual downloading.
+        api_download_endpoints: dict[str, str | None] = {}
         if status == "DELIVERY_COMPLETED":
-            download_urls = {
+            api_download_endpoints = {
                 "image": getattr(order, "download_image_url", None),
                 "payload": getattr(order, "download_payload_url", None),
                 "cog": getattr(order, "download_cog_url", None),
             }
-            download_urls = {k: v for k, v in download_urls.items() if v}
+            api_download_endpoints = {k: v for k, v in api_download_endpoints.items() if v}
 
         cost_str = f"${cost_cents / 100:.2f}" if cost_cents else "N/A"
         date_str = created_at.date().isoformat() if created_at else "N/A"
 
         summary = (
             f"{order_type} order {order_id}: status {status}. "
-            f"Cost: {cost_str}. Created: {date_str}."
+            f"Cost: {cost_str}. Created: {date_str}. "
+            f"View order: {skyfi_order_url}"
         )
-        if download_urls:
-            summary += f" {len(download_urls)} deliverable(s) available for download."
+        if api_download_endpoints:
+            summary += (
+                f" {len(api_download_endpoints)} deliverable(s) ready."
+                " Use download_deliverable to get a signed download URL."
+            )
+
+        order_dict: dict[str, Any] = order.model_dump(mode="json")
+        order_dict["skyfi_order_url"] = skyfi_order_url
 
         return {
-            "order": order.model_dump(mode="json"),
+            "order": order_dict,
             "status": status,
-            "download_urls": download_urls,
+            "skyfi_order_url": skyfi_order_url,
+            "api_download_endpoints": api_download_endpoints,
             "summary": summary,
         }
 
