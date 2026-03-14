@@ -77,7 +77,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """FastAPI lifespan: init DB, rate limiter, Sentry, and expose state."""
+    """FastAPI lifespan: init DB, rate limiter, Sentry, MCP session manager, and expose state."""
     log.info("fastapi_startup")
 
     # Access settings stored on app.state by create_app
@@ -117,14 +117,21 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if hasattr(rate_limiter, "start_sweep"):
         rate_limiter.start_sweep()
 
-    # Signal that the server is fully ready
-    app.state.ready = True
-    log.info("fastapi_startup_complete")
+    # Run MCP StreamableHTTP session manager lifecycle.
+    # The session manager creates an anyio task group that handles concurrent
+    # MCP sessions. It must be started here because the mounted sub-app's own
+    # lifespan is not triggered by FastAPI — only the root app's lifespan runs.
+    mcp_session_manager = app.state.mcp_session_manager
+    async with mcp_session_manager.run():
+        # Signal that the server is fully ready
+        app.state.ready = True
+        log.info("fastapi_startup_complete")
 
-    yield
+        yield
 
-    # Cleanup
-    app.state.ready = False
+        # Cleanup
+        app.state.ready = False
+
     await rate_limiter.close()
     await engine.dispose()
     log.info("fastapi_shutdown")
@@ -179,7 +186,15 @@ def create_app(settings: Any | None = None) -> FastAPI:
         description="Remote MCP server wrapping the SkyFi Platform API",
         version="1.0.0",
         lifespan=_lifespan,
+        redirect_slashes=False,
     )
+
+    # Initialize MCP session manager eagerly so _lifespan can call .run() on it.
+    # streamable_http_app() lazily creates the session manager on first call.
+    from purveyor.server import mcp as mcp_server
+
+    mcp_sub_app = mcp_server.streamable_http_app()
+    app.state.mcp_session_manager = mcp_server.session_manager
 
     # Store settings and rate limiter on app.state so _lifespan can access them
     app.state.settings = settings
@@ -199,11 +214,6 @@ def create_app(settings: Any | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    # Mount MCP server at /mcp
-    from purveyor.server import mcp
-
-    app.mount("/mcp", mcp.streamable_http_app())
 
     # Webhook routes (real implementation — Task 3.3)
     from purveyor.webhooks.receiver import router as webhook_router
@@ -511,6 +521,13 @@ def create_app(settings: Any | None = None) -> FastAPI:
                 "skyfi_order_id": str(order_response.id),
             },
         )
+
+    # Mount MCP server at root so the sub-app receives the full /mcp path.
+    # streamable_http_app() creates a Starlette app with an internal route at
+    # /mcp — mounting at /mcp would strip that prefix, causing 404. Mounting at
+    # / (after all other routes) lets specific routes match first, then falls
+    # through to the MCP app for /mcp requests.
+    app.mount("/", mcp_sub_app)
 
     return app
 

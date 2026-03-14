@@ -22,7 +22,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools.mcp_tool import McpToolset
-from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.genai import types
 
 load_dotenv()
@@ -34,7 +34,7 @@ SKYFI_API_KEY = os.environ.get("SKYFI_API_KEY", "")
 async def get_agent() -> tuple[LlmAgent, McpToolset]:
     """Create the agent and return it along with the toolset for cleanup."""
     toolset = McpToolset(
-        connection_params=SseConnectionParams(
+        connection_params=StreamableHTTPConnectionParams(
             url=f"{PURVEYOR_URL}/mcp",
             headers={"X-Skyfi-Api-Key": SKYFI_API_KEY},
         ),

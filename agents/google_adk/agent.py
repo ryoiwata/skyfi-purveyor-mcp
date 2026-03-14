@@ -16,7 +16,7 @@ import os
 from dotenv import load_dotenv
 from google.adk.agents import LlmAgent
 from google.adk.tools.mcp_tool import McpToolset
-from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
 load_dotenv()
 
@@ -40,7 +40,7 @@ location, then search archives. Always tell the user about pricing before orderi
 When placing orders, explain that they'll need to confirm via a browser link.""",
     tools=[
         McpToolset(
-            connection_params=SseConnectionParams(
+            connection_params=StreamableHTTPConnectionParams(
                 url=f"{PURVEYOR_URL}/mcp",
                 headers={"X-Skyfi-Api-Key": SKYFI_API_KEY},
             ),

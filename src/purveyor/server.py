@@ -8,6 +8,7 @@ from typing import Any
 
 import structlog
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from purveyor import __version__
 from purveyor.core.cache import CachedSkyFiClient, get_cache_backend
@@ -59,10 +60,14 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         await engine.dispose()
 
 
-# Create the MCP server instance
+# Create the MCP server instance.
+# DNS rebinding protection is disabled: the X-Skyfi-Api-Key header is the auth
+# boundary (per DESIGN_DECISIONS §CORS). Purveyor runs behind a load balancer
+# whose hostname would otherwise fail host validation.
 mcp = FastMCP(
     "purveyor",
     lifespan=lifespan,
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
