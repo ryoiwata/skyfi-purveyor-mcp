@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import uuid
 from typing import Any
+from urllib.parse import quote
 
 import structlog
 from mcp.server.fastmcp import Context, FastMCP
@@ -442,7 +443,7 @@ def register(mcp: FastMCP) -> None:
 
         # Build confirmation URL
         base = (settings.confirmation_base_url or f"http://localhost:{settings.server_port}").rstrip("/")
-        confirmation_url = f"{base}/confirm/{token}"
+        confirmation_url = f"{base}/confirm/{quote(token, safe='')}"
 
         cost_str = f"${estimated_cost_cents / 100:.2f}"
         area_str = f"{aoi_area_sq_km:.1f} sq km" if aoi_area_sq_km else "unknown area"
@@ -610,7 +611,7 @@ def register(mcp: FastMCP) -> None:
             ).to_call_tool_result()
 
         base = (settings.confirmation_base_url or f"http://localhost:{settings.server_port}").rstrip("/")
-        confirmation_url = f"{base}/confirm/{token}"
+        confirmation_url = f"{base}/confirm/{quote(token, safe='')}"
 
         cost_str = f"${estimated_cost_cents / 100:.2f}"
         provider = getattr(archive, "provider", "unknown")

@@ -261,3 +261,43 @@ def test_token_hash_identical_after_url_path_round_trip(client: Any, app: Any, f
         f"  Token length: {len(token)}\n"
         f"  Token suffix: ...{token[-10:]!r}"
     )
+
+
+def test_token_hash_identical_after_percent_encoded_url_path(client: Any, app: Any, fernet_key: bytes) -> None:
+    """Token percent-encoded in URL path (as orders.py now builds it) decodes correctly.
+
+    Fernet tokens contain '_' and '=' which markdown renderers may corrupt when
+    displayed as raw text.  The fix is to percent-encode the token in the URL so
+    it contains only alphanumerics and '%'.  Starlette must URL-decode the path
+    param and produce the same hash as the original token.
+    """
+    from urllib.parse import quote
+
+    from purveyor.core.confirmation import compute_token_hash
+
+    token = _make_token(fernet_key, {"api_key": "pct-encode-key", "order_type": "ARCHIVE",
+                                      "order_params": {}, "estimated_cost_cents": 0})
+    expected_hash = compute_token_hash(token)
+    encoded_token = quote(token, safe="")
+    captured: dict[str, str] = {}
+
+    import purveyor.core.confirmation as conf_module
+    original_fn = conf_module.compute_token_hash
+
+    def capturing_hash(t: str) -> str:
+        h = original_fn(t)
+        captured["hash"] = h
+        return h
+
+    _persist_record(app, token)
+
+    with patch.object(conf_module, "compute_token_hash", side_effect=capturing_hash):
+        response = client.get(f"/confirm/{encoded_token}")
+
+    assert "hash" in captured, "compute_token_hash was never called during the request"
+    assert captured["hash"] == expected_hash, (
+        f"Token hash mismatch after percent-encoded URL path round-trip!\n"
+        f"  Before HTTP: {expected_hash}\n"
+        f"  After HTTP:  {captured['hash']}\n"
+    )
+    assert response.status_code == 200
