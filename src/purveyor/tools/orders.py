@@ -292,6 +292,7 @@ def register(mcp: FastMCP) -> None:
         provider_window_id: str | None = None,
         priority: bool = False,
         metadata: dict[str, Any] | None = None,
+        webhook_url: str | None = None,
     ) -> Any:
         """Create a tasking order request. Returns a confirmation URL for human review.
 
@@ -312,6 +313,9 @@ def register(mcp: FastMCP) -> None:
             provider_window_id: Provider-specific window ID from pass predictions.
             priority: Whether to mark as a priority item.
             metadata: Optional metadata dict to attach to the order.
+            webhook_url: Optional URL to receive order status updates via webhook.
+                SkyFi will POST to this URL whenever the order status changes
+                (e.g. CREATED, STARTED, PROCESSING_COMPLETE, DELIVERY_COMPLETED).
         """
         log.info("tool_create_tasking_order", location=location[:50], product_type=product_type)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
@@ -453,6 +457,7 @@ def register(mcp: FastMCP) -> None:
             required_provider=provider,  # type: ignore[arg-type]
             provider_window_id=uuid.UUID(provider_window_id) if provider_window_id else None,
             metadata=metadata,
+            webhook_url=webhook_url,
         )
 
         # Build payload for Fernet token — must use the per-request API key so the
@@ -465,6 +470,7 @@ def register(mcp: FastMCP) -> None:
             "estimated_cost_cents": estimated_cost_cents,
             "aoi_area_sq_km": round(aoi_area_sq_km, 2),
             "price_per_sq_km": price_per_sq_km,
+            "webhook_url": webhook_url,
         }
 
         try:
@@ -542,6 +548,7 @@ def register(mcp: FastMCP) -> None:
         delivery_driver: str = "NONE",
         delivery_params: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        webhook_url: str | None = None,
     ) -> Any:
         """Create an archive order request. Returns a confirmation URL for human review.
 
@@ -554,6 +561,9 @@ def register(mcp: FastMCP) -> None:
             delivery_driver: Delivery destination (NONE, S3, GS, AZURE, etc.).
             delivery_params: Delivery credentials dict for the chosen driver.
             metadata: Optional metadata dict to attach to the order.
+            webhook_url: Optional URL to receive order status updates via webhook.
+                SkyFi will POST to this URL whenever the order status changes
+                (e.g. CREATED, STARTED, PROCESSING_COMPLETE, DELIVERY_COMPLETED).
         """
         log.info("tool_create_archive_order", archive_id=archive_id)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
@@ -652,6 +662,7 @@ def register(mcp: FastMCP) -> None:
             delivery_driver=driver_enum,
             delivery_params=delivery_params,
             metadata=metadata,
+            webhook_url=webhook_url,
         )
 
         api_key = get_api_key_from_ctx(ctx)
@@ -662,6 +673,7 @@ def register(mcp: FastMCP) -> None:
             "estimated_cost_cents": estimated_cost_cents,
             "aoi_area_sq_km": round(aoi_area_sq_km, 2),
             "price_per_sq_km": price_per_sq_km_cents / 100.0,
+            "webhook_url": webhook_url,
         }
 
         try:

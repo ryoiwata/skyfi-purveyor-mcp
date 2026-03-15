@@ -15,7 +15,6 @@ def get_api_key_from_ctx(ctx: McpContext) -> str:
     In local mode, returns the server-configured key from Settings.
     In cloud mode, reads the X-Skyfi-Api-Key HTTP request header.
     """
-    from typing import Any
 
     lc: dict[str, Any] = ctx.request_context.lifespan_context
     settings = lc["settings"]

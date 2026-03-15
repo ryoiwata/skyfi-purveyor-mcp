@@ -416,6 +416,7 @@ def create_app(settings: Any | None = None) -> FastAPI:
         estimated_cost_cents: int = payload.get(
             "estimated_cost_cents", record.estimated_cost_cents or 0
         )
+        webhook_url: str | None = payload.get("webhook_url")
 
         estimated_cost_dollars = f"${estimated_cost_cents / 100:,.2f}"
 
@@ -442,6 +443,7 @@ def create_app(settings: Any | None = None) -> FastAPI:
                 "estimated_cost_dollars": estimated_cost_dollars,
                 "cost_breakdown": cost_breakdown,
                 "expires_at_utc": f"This link expires at {expires_at_str}",
+                "webhook_url": webhook_url,
                 "skyfi_order_id": None,
                 "error_message": None,
             },
