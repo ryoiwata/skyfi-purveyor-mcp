@@ -603,6 +603,7 @@ class TaskingOrderResponse(BaseModel):
     geocode_location: str | None = Field(default=None, alias="geocodeLocation")
     deliverable_id: uuid.UUID | None = Field(default=None, alias="deliverableId")
     provider_window_id: uuid.UUID | None = Field(default=None, alias="providerWindowId")
+    webhook_url: str | None = Field(default=None, alias="webhookUrl")
 
 
 class ArchiveOrderResponse(BaseModel):
@@ -634,6 +635,7 @@ class ArchiveOrderResponse(BaseModel):
     cog_size: int | None = Field(default=None, alias="cogSize")
     geocode_location: str | None = Field(default=None, alias="geocodeLocation")
     deliverable_id: uuid.UUID | None = Field(default=None, alias="deliverableId")
+    webhook_url: str | None = Field(default=None, alias="webhookUrl")
 
 
 # Union type for order responses
