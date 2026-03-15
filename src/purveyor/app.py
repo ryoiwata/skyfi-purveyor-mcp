@@ -640,7 +640,7 @@ def create_app(settings: Any | None = None) -> FastAPI:
 
     @app.get("/webhooks/orders/ui", response_class=HTMLResponse)
     async def webhook_events_ui() -> HTMLResponse:
-        """Simple HTML viewer for demo order webhook events. Auto-refreshes every 5 seconds."""
+        """Live-polling HTML viewer for demo order webhook events."""
         purveyor_url = ""
         # Try to get the configured base URL for display
         try:
@@ -659,69 +659,241 @@ def create_app(settings: Any | None = None) -> FastAPI:
 <html>
 <head>
     <title>Purveyor — Order Webhook Events</title>
-    <meta http-equiv="refresh" content="5">
     <style>
+        * {{ box-sizing: border-box; }}
         body {{
             font-family: system-ui, sans-serif; max-width: 900px;
             margin: 40px auto; padding: 0 20px;
             background: #0d1117; color: #c9d1d9;
         }}
-        h1 {{color: #58a6ff;}}
+        h1 {{ color: #58a6ff; margin-bottom: 4px; }}
+        .header-row {{
+            display: flex; align-items: center; gap: 12px;
+            flex-wrap: wrap; margin-bottom: 4px;
+        }}
+        .status-dot {{
+            width: 10px; height: 10px; border-radius: 50%;
+            background: #3fb950; flex-shrink: 0;
+            box-shadow: 0 0 6px #3fb95088;
+            transition: background 0.3s;
+        }}
+        .status-dot.disconnected {{ background: #f85149; box-shadow: 0 0 6px #f8514988; }}
+        .meta {{ color: #8b949e; font-size: 13px; margin: 0 0 4px; }}
+        .event-count {{ color: #58a6ff; font-weight: bold; }}
+        .sound-toggle {{
+            background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+            border-radius: 6px; padding: 3px 10px; font-size: 12px;
+            cursor: pointer; user-select: none;
+        }}
+        .sound-toggle:hover {{ background: #30363d; }}
         .event {{
             background: #161b22; border: 1px solid #30363d;
             border-radius: 8px; padding: 16px; margin: 12px 0;
         }}
-        .event-header {{display: flex; justify-content: space-between; margin-bottom: 8px;}}
-        .status {{font-weight: bold; padding: 2px 8px; border-radius: 4px;}}
-        .status-CREATED {{background: #1f6feb33; color: #58a6ff;}}
-        .status-STARTED {{background: #d2992233; color: #d29922;}}
-        .status-PROCESSING_COMPLETE {{background: #23883333; color: #3fb950;}}
-        .status-DELIVERY_COMPLETED {{background: #23883333; color: #3fb950;}}
-        .status-FAILED {{background: #f8514933; color: #f85149;}}
+        @keyframes slideIn {{
+            from {{ opacity: 0; transform: translateY(-16px); }}
+            to   {{ opacity: 1; transform: translateY(0); }}
+        }}
+        .event-new {{ animation: slideIn 0.35s ease-out; }}
+        .event-header {{ display: flex; justify-content: space-between; margin-bottom: 8px; }}
+        .status {{ font-weight: bold; padding: 2px 8px; border-radius: 4px; }}
+        .status-CREATED {{ background: #1f6feb33; color: #58a6ff; }}
+        .status-STARTED {{ background: #d2992233; color: #d29922; }}
+        .status-PROCESSING_COMPLETE {{ background: #23883333; color: #3fb950; }}
+        .status-DELIVERY_COMPLETED {{ background: #23883333; color: #3fb950; }}
+        .status-FAILED {{ background: #f8514933; color: #f85149; }}
         pre {{
             background: #0d1117; padding: 12px;
             border-radius: 4px; overflow-x: auto; font-size: 13px;
         }}
-        .timestamp {{color: #8b949e; font-size: 13px;}}
-        .empty {{text-align: center; padding: 60px; color: #8b949e;}}
-        .order-link {{color: #58a6ff; text-decoration: none;}}
-        .order-link:hover {{text-decoration: underline;}}
-        code {{background: #161b22; padding: 2px 6px; border-radius: 4px; font-size: 13px;}}
+        .timestamp {{ color: #8b949e; font-size: 13px; }}
+        .empty {{ text-align: center; padding: 60px; color: #8b949e; }}
+        .order-link {{ color: #58a6ff; text-decoration: none; }}
+        .order-link:hover {{ text-decoration: underline; }}
+        code {{ background: #161b22; padding: 2px 6px; border-radius: 4px; font-size: 13px; }}
+        #new-events-toast {{
+            display: none; position: fixed; top: 16px; left: 50%;
+            transform: translateX(-50%);
+            background: #1f6feb; color: #fff;
+            padding: 8px 20px; border-radius: 20px;
+            font-size: 14px; font-weight: bold;
+            cursor: pointer; z-index: 100;
+            box-shadow: 0 4px 12px #0006;
+            transition: opacity 0.2s;
+        }}
+        #new-events-toast:hover {{ background: #388bfd; }}
     </style>
 </head>
 <body>
     <h1>&#x1F6F0;&#xFE0F; Order Webhook Events</h1>
-    <p class="timestamp">Auto-refreshes every 5 seconds. Webhook URL: <code>{webhook_url_display}</code></p>
+    <div class="header-row">
+        <span class="status-dot" id="dot"></span>
+        <span class="meta" id="updated">Connecting&hellip;</span>
+        <span class="meta">&bull; <span class="event-count" id="count">0</span> events</span>
+        <button class="sound-toggle" id="sound-btn" title="Toggle notification sound">&#x1F515; Sound off</button>
+    </div>
+    <p class="meta">Webhook URL: <code>{webhook_url_display}</code></p>
     <div id="events"></div>
+    <div id="new-events-toast">New events &#x2191;</div>
+
     <script>
-        async function loadEvents() {{
-            const resp = await fetch('/webhooks/orders?limit=50');
-            const data = await resp.json();
-            const el = document.getElementById('events');
-            if (data.events.length === 0) {{
-                el.innerHTML = '<div class="empty">No webhook events yet.<br>Place an order with webhook_url pointed here to see events.</div>';
+        // ── state ──────────────────────────────────────────────────────────
+        let lastCount = 0;
+        let lastTimestamp = null;
+        let secondsSince = 0;
+        let soundOn = false;
+        let audioCtx = null;
+
+        // ── sound ──────────────────────────────────────────────────────────
+        document.getElementById('sound-btn').addEventListener('click', () => {{
+            soundOn = !soundOn;
+            document.getElementById('sound-btn').textContent =
+                soundOn ? '\\uD83D\\uDD14 Sound on' : '\\uD83D\\uDD15 Sound off';
+        }});
+
+        function playPing() {{
+            if (!soundOn) return;
+            try {{
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.15);
+                gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+                osc.start(audioCtx.currentTime);
+                osc.stop(audioCtx.currentTime + 0.25);
+            }} catch (e) {{}}
+        }}
+
+        // ── toast ──────────────────────────────────────────────────────────
+        const toast = document.getElementById('new-events-toast');
+        toast.addEventListener('click', () => {{
+            window.scrollTo({{ top: 0, behavior: 'smooth' }});
+            toast.style.display = 'none';
+        }});
+
+        function isScrolledDown() {{
+            return window.scrollY > 120;
+        }}
+
+        // ── event rendering ────────────────────────────────────────────────
+        function buildEventEl(e, isNew) {{
+            const p = e.payload || {{}};
+            const status = (p.event && p.event.status) ? p.event.status : 'UNKNOWN';
+            const orderInfo = p.order_info || p.orderInfo || {{}};
+            const orderId = orderInfo.id || orderInfo.order_id || 'unknown';
+            const orderType = orderInfo.order_type || orderInfo.orderType || '';
+            const message = (p.event && p.event.message) ? p.event.message : '';
+            const orderUrl = 'https://app.skyfi.com/orders/' + orderId;
+
+            const div = document.createElement('div');
+            div.className = 'event' + (isNew ? ' event-new' : '');
+            div.dataset.ts = e.received_at || '';
+            div.innerHTML =
+                '<div class="event-header">'
+                + '<span class="status status-' + status + '">' + status + '</span>'
+                + '<span class="timestamp">' + (e.received_at || '') + '</span>'
+                + '</div>'
+                + '<div>Order: <a href="' + orderUrl + '" target="_blank" class="order-link">' + orderId + '</a>'
+                + (orderType ? ' (' + orderType + ')' : '') + '</div>'
+                + (message ? '<div>' + message + '</div>' : '')
+                + '<details><summary>Full payload</summary><pre>'
+                + JSON.stringify(p, null, 2).replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                + '</pre></details>';
+            return div;
+        }}
+
+        function updateEventList(events, newCount) {{
+            const container = document.getElementById('events');
+
+            if (events.length === 0) {{
+                container.innerHTML = '<div class="empty">No webhook events yet.<br>Place an order with webhook_url pointed here to see events.</div>';
                 return;
             }}
-            el.innerHTML = data.events.map(e => {{
-                const p = e.payload;
-                const status = (p.event && p.event.status) ? p.event.status : 'UNKNOWN';
-                const orderInfo = p.order_info || p.orderInfo || {{}};
-                const orderId = orderInfo.id || orderInfo.order_id || 'unknown';
-                const orderType = orderInfo.order_type || orderInfo.orderType || '';
-                const message = (p.event && p.event.message) ? p.event.message : '';
-                const orderUrl = 'https://app.skyfi.com/orders/' + orderId;
-                return '<div class="event">'
-                    + '<div class="event-header">'
-                    + '<span class="status status-' + status + '">' + status + '</span>'
-                    + '<span class="timestamp">' + e.received_at + '</span>'
-                    + '</div>'
-                    + '<div>Order: <a href="' + orderUrl + '" target="_blank" class="order-link">' + orderId + '</a> (' + orderType + ')</div>'
-                    + (message ? '<div>' + message + '</div>' : '')
-                    + '<details><summary>Full payload</summary><pre>' + JSON.stringify(p, null, 2) + '</pre></details>'
-                    + '</div>';
-            }}).join('');
+
+            // Determine which events are new by comparing timestamps already in DOM
+            const existing = new Set();
+            container.querySelectorAll('.event[data-ts]').forEach(el => existing.add(el.dataset.ts));
+
+            // Prepend new events (events are newest-first from the API)
+            let addedCount = 0;
+            for (let i = newCount - 1; i >= 0; i--) {{
+                const e = events[i];
+                const ts = e.received_at || '';
+                if (!existing.has(ts)) {{
+                    const el = buildEventEl(e, true);
+                    container.insertBefore(el, container.firstChild);
+                    addedCount++;
+                }}
+            }}
+
+            // Remove the empty placeholder if present
+            const empty = container.querySelector('.empty');
+            if (empty) empty.remove();
+
+            if (addedCount > 0) {{
+                playPing();
+                if (isScrolledDown()) {{
+                    toast.style.display = 'block';
+                }}
+            }}
         }}
-        loadEvents();
+
+        // ── status / counter ───────────────────────────────────────────────
+        const dot = document.getElementById('dot');
+        const updatedEl = document.getElementById('updated');
+        const countEl = document.getElementById('count');
+
+        function setConnected(ok) {{
+            dot.className = 'status-dot' + (ok ? '' : ' disconnected');
+        }}
+
+        function tick() {{
+            secondsSince++;
+            updatedEl.textContent = secondsSince === 0
+                ? 'Just updated'
+                : 'Last updated ' + secondsSince + 's ago';
+        }}
+        setInterval(tick, 1000);
+
+        // ── poll ───────────────────────────────────────────────────────────
+        async function poll() {{
+            try {{
+                const resp = await fetch('/webhooks/orders?limit=50');
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const data = await resp.json();
+                setConnected(true);
+                countEl.textContent = data.total_stored;
+
+                const newCount = data.total_stored - lastCount;
+                if (data.total_stored !== lastCount) {{
+                    updateEventList(data.events, newCount > 0 ? newCount : data.events.length);
+                    lastCount = data.total_stored;
+                    secondsSince = 0;
+                    updatedEl.textContent = 'Just updated';
+                }} else if (lastCount === 0) {{
+                    // Ensure empty state renders on first load
+                    updateEventList([], 0);
+                    secondsSince = 0;
+                    updatedEl.textContent = 'Just updated';
+                }}
+            }} catch (e) {{
+                setConnected(false);
+                updatedEl.textContent = 'Connection error — retrying\u2026';
+            }}
+            setTimeout(poll, 3000);
+        }}
+
+        // Hide toast when user scrolls back to top
+        window.addEventListener('scroll', () => {{
+            if (!isScrolledDown()) toast.style.display = 'none';
+        }});
+
+        poll();
     </script>
 </body>
 </html>"""
