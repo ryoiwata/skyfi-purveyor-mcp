@@ -19,6 +19,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
+from purveyor.core.webhook_store import order_webhook_events
+
 log = structlog.get_logger(__name__)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -587,6 +589,142 @@ def create_app(settings: Any | None = None) -> FastAPI:
                 "state": "confirmed",
                 "skyfi_order_id": str(order_response.id),
             },
+        )
+
+    # ------------------------------------------------------------------
+    # Demo webhook receiver routes
+    # ------------------------------------------------------------------
+
+    @app.post("/webhooks/orders")
+    async def receive_order_webhook(request: Request) -> JSONResponse:
+        """Receive order status webhooks from SkyFi for demo/testing purposes.
+
+        Stores up to 100 recent events in memory (not persisted across restarts).
+        Returns 200 immediately — SkyFi has a 2-second webhook timeout.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        order_webhook_events.appendleft(
+            {
+                "received_at": datetime.datetime.now(datetime.UTC).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
+                "payload": body,
+            }
+        )
+        log.info(
+            "demo_webhook_received",
+            total_stored=len(order_webhook_events),
+            status=body.get("event", {}).get("status") if isinstance(body, dict) else None,
+        )
+        return JSONResponse(content={"status": "ok"})
+
+    @app.get("/webhooks/orders")
+    async def list_order_webhooks(limit: int = 20) -> JSONResponse:
+        """List recently received order webhook events (demo endpoint).
+
+        Args:
+            limit: Maximum number of events to return (1-100).
+        """
+        limit = max(1, min(limit, 100))
+        events = list(order_webhook_events)[:limit]
+        return JSONResponse(
+            content={
+                "total_stored": len(order_webhook_events),
+                "showing": len(events),
+                "events": events,
+            }
+        )
+
+    @app.get("/webhooks/orders/ui", response_class=HTMLResponse)
+    async def webhook_events_ui() -> HTMLResponse:
+        """Simple HTML viewer for demo order webhook events. Auto-refreshes every 5 seconds."""
+        purveyor_url = ""
+        # Try to get the configured base URL for display
+        try:
+            settings_obj: Any = app.state.settings
+            purveyor_url = (
+                settings_obj.confirmation_base_url
+                or "http://localhost:8000"
+            ).rstrip("/")
+        except AttributeError:
+            purveyor_url = "http://localhost:8000"
+
+        webhook_url_display = f"{purveyor_url}/webhooks/orders"
+
+        return HTMLResponse(
+            content=f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Purveyor — Order Webhook Events</title>
+    <meta http-equiv="refresh" content="5">
+    <style>
+        body {{
+            font-family: system-ui, sans-serif; max-width: 900px;
+            margin: 40px auto; padding: 0 20px;
+            background: #0d1117; color: #c9d1d9;
+        }}
+        h1 {{color: #58a6ff;}}
+        .event {{
+            background: #161b22; border: 1px solid #30363d;
+            border-radius: 8px; padding: 16px; margin: 12px 0;
+        }}
+        .event-header {{display: flex; justify-content: space-between; margin-bottom: 8px;}}
+        .status {{font-weight: bold; padding: 2px 8px; border-radius: 4px;}}
+        .status-CREATED {{background: #1f6feb33; color: #58a6ff;}}
+        .status-STARTED {{background: #d2992233; color: #d29922;}}
+        .status-PROCESSING_COMPLETE {{background: #23883333; color: #3fb950;}}
+        .status-DELIVERY_COMPLETED {{background: #23883333; color: #3fb950;}}
+        .status-FAILED {{background: #f8514933; color: #f85149;}}
+        pre {{
+            background: #0d1117; padding: 12px;
+            border-radius: 4px; overflow-x: auto; font-size: 13px;
+        }}
+        .timestamp {{color: #8b949e; font-size: 13px;}}
+        .empty {{text-align: center; padding: 60px; color: #8b949e;}}
+        .order-link {{color: #58a6ff; text-decoration: none;}}
+        .order-link:hover {{text-decoration: underline;}}
+        code {{background: #161b22; padding: 2px 6px; border-radius: 4px; font-size: 13px;}}
+    </style>
+</head>
+<body>
+    <h1>&#x1F6F0;&#xFE0F; Order Webhook Events</h1>
+    <p class="timestamp">Auto-refreshes every 5 seconds. Webhook URL: <code>{webhook_url_display}</code></p>
+    <div id="events"></div>
+    <script>
+        async function loadEvents() {{
+            const resp = await fetch('/webhooks/orders?limit=50');
+            const data = await resp.json();
+            const el = document.getElementById('events');
+            if (data.events.length === 0) {{
+                el.innerHTML = '<div class="empty">No webhook events yet.<br>Place an order with webhook_url pointed here to see events.</div>';
+                return;
+            }}
+            el.innerHTML = data.events.map(e => {{
+                const p = e.payload;
+                const status = (p.event && p.event.status) ? p.event.status : 'UNKNOWN';
+                const orderInfo = p.order_info || p.orderInfo || {{}};
+                const orderId = orderInfo.id || orderInfo.order_id || 'unknown';
+                const orderType = orderInfo.order_type || orderInfo.orderType || '';
+                const message = (p.event && p.event.message) ? p.event.message : '';
+                const orderUrl = 'https://app.skyfi.com/orders/' + orderId;
+                return '<div class="event">'
+                    + '<div class="event-header">'
+                    + '<span class="status status-' + status + '">' + status + '</span>'
+                    + '<span class="timestamp">' + e.received_at + '</span>'
+                    + '</div>'
+                    + '<div>Order: <a href="' + orderUrl + '" target="_blank" class="order-link">' + orderId + '</a> (' + orderType + ')</div>'
+                    + (message ? '<div>' + message + '</div>' : '')
+                    + '<details><summary>Full payload</summary><pre>' + JSON.stringify(p, null, 2) + '</pre></details>'
+                    + '</div>';
+            }}).join('');
+        }}
+        loadEvents();
+    </script>
+</body>
+</html>"""
         )
 
     # Mount MCP server at root so the sub-app receives the full /mcp path.

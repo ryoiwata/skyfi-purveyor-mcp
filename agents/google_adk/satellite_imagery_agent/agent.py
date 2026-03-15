@@ -55,7 +55,14 @@ root_agent = LlmAgent(
     "AOI SIZING: Each archive has `min_sq_km` and `max_sq_km` fields. "
     "If the search AOI is outside those limits, use create_aoi_from_point to create "
     "a correctly-sized AOI before calling create_archive_order. "
-    "For most use cases, 25-100 km² is a good default AOI size.",
+    "For most use cases, 25-100 km² is a good default AOI size."
+    "\n\n"
+    "WEBHOOK STATUS UPDATES: When placing orders, you can include a webhook_url to receive "
+    f"order status updates. Use {PURVEYOR_URL}/webhooks/orders as the webhook URL to have "
+    "updates sent to this Purveyor instance. After placing an order with that webhook_url, "
+    "call list_webhook_events to check order progress in the conversation. "
+    f"The user can also visit {PURVEYOR_URL}/webhooks/orders/ui in their browser "
+    "to watch events update in real-time (auto-refreshes every 5 seconds).",
     tools=[
         McpToolset(
             connection_params=StreamableHTTPConnectionParams(

@@ -90,6 +90,7 @@ def _register_all() -> None:
     from purveyor.tools.orders import register as register_orders
     from purveyor.tools.preview import register as register_preview
     from purveyor.tools.pricing import register as register_pricing
+    from purveyor.tools.webhook_events import register as register_webhook_events
 
     register_geospatial(mcp)
     register_archives(mcp)
@@ -99,6 +100,7 @@ def _register_all() -> None:
     register_orders(mcp)
     register_account(mcp)
     register_notifications(mcp)
+    register_webhook_events(mcp)
     register_resources(mcp)
 
 
