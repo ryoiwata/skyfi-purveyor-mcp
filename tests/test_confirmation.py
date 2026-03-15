@@ -98,6 +98,99 @@ def test_encrypt_decrypt_round_trip() -> None:
     assert result["order_params"]["productType"] == "DAY"
 
 
+def test_minimal_token_is_short() -> None:
+    """New tokens carry only api_key — URL token must be short enough for LLMs."""
+    from purveyor.core.confirmation import fernet_to_url_token
+
+    key = _make_fernet_key()
+    # New-style minimal payload: only the API key
+    minimal_payload = {"api_key": "sk_live_abcdef1234567890abcdef1234567890"}
+    token = encrypt_confirmation_token(minimal_payload, key)
+    url_token = fernet_to_url_token(token)
+
+    # Must be well under 256 chars so LLMs don't truncate
+    assert len(url_token) < 256, (
+        f"URL token is {len(url_token)} chars — too long for reliable LLM rendering"
+    )
+
+
+async def test_confirm_order_loads_params_from_db(session_factory: Any) -> None:
+    """confirm_order uses order_params from order_payload_json when present."""
+    import json
+
+    key = _make_fernet_key()
+    # Minimal token: only api_key
+    token = encrypt_confirmation_token({"api_key": "test-api-key"}, key)
+
+    order_payload = {
+        "order_params": {
+            "aoi": "POLYGON((-97.72 30.28, -97.72 30.24, -97.76 30.24, "
+                   "-97.76 30.28, -97.72 30.28))",
+            "windowStart": "2026-03-15T10:00:00",
+            "windowEnd": "2026-03-15T18:00:00",
+            "productType": "DAY",
+            "resolution": "VERY HIGH",
+            "deliveryDriver": "NONE",
+            "webhookUrl": "https://webhook.site/test-url",
+        },
+        "webhook_url": "https://webhook.site/test-url",
+    }
+    order_payload_json = json.dumps(order_payload)
+
+    order_response = _make_tasking_order_response()
+    mock_client = MagicMock()
+    mock_client.create_tasking_order = AsyncMock(return_value=order_response)
+    mock_client.close = AsyncMock()
+
+    async with session_factory() as session:
+        await create_confirmation(
+            session, token, "TASKING", "f" * 64, 42500,
+            order_payload_json=order_payload_json,
+        )
+
+    async with session_factory() as session:
+        record, resp = await confirm_order(
+            session=session,
+            token=token,
+            fernet_key=key,
+            skyfi_client=mock_client,
+        )
+
+    assert record.status == "placed"
+    assert record.skyfi_order_id == order_response.id
+    # Verify order was placed with params from DB (not from token)
+    call_args = mock_client.create_tasking_order.call_args[0][0]
+    assert call_args.webhook_url == "https://webhook.site/test-url"
+
+
+async def test_confirm_order_backward_compat_no_db_payload(session_factory: Any) -> None:
+    """confirm_order falls back to token payload for pre-migration records."""
+    key = _make_fernet_key()
+    # Old-style token with full payload
+    payload = _sample_payload()
+    token = encrypt_confirmation_token(payload, key)
+
+    order_response = _make_tasking_order_response()
+    mock_client = MagicMock()
+    mock_client.create_tasking_order = AsyncMock(return_value=order_response)
+    mock_client.close = AsyncMock()
+
+    async with session_factory() as session:
+        # No order_payload_json — simulates pre-migration record
+        await create_confirmation(session, token, "TASKING", "f" * 64, 42500)
+
+    async with session_factory() as session:
+        record, resp = await confirm_order(
+            session=session,
+            token=token,
+            fernet_key=key,
+            skyfi_client=mock_client,
+        )
+
+    assert record.status == "placed"
+    mock_client.create_tasking_order.assert_called_once()
+
+
 async def test_decrypt_expired_token() -> None:
     """Decrypting an expired token raises ToolError with ORDER_EXPIRED."""
     key = _make_fernet_key()

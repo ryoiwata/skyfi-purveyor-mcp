@@ -143,6 +143,7 @@ async def create_confirmation(
     order_type: str,
     api_key_hash: str,
     estimated_cost_cents: int,
+    order_payload_json: str | None = None,
     mcp_session_id: str | None = None,
 ) -> OrderConfirmation:
     """Create and persist a new pending OrderConfirmation record.
@@ -153,6 +154,8 @@ async def create_confirmation(
         order_type: "TASKING" or "ARCHIVE".
         api_key_hash: SHA-256 hex digest of the user's API key.
         estimated_cost_cents: Estimated order cost in integer cents.
+        order_payload_json: JSON string with order_params and webhook_url.
+            Storing these in the DB keeps the URL token short (API key only).
         mcp_session_id: Optional MCP session ID for SSE routing.
 
     Returns:
@@ -169,6 +172,7 @@ async def create_confirmation(
         mcp_session_id=mcp_session_id,
         estimated_cost_cents=estimated_cost_cents,
         expires_at=expires_at,
+        order_payload_json=order_payload_json,
     )
     session.add(record)
     await session.commit()
@@ -269,12 +273,21 @@ async def confirm_order(
             message="This order confirmation has expired.",
         )
 
-    # --- Step 3: Decrypt token (validates TTL — raises ToolError if expired) ---
+    # --- Step 3: Decrypt token to get API key (validates TTL) ---
+    # Order params are loaded from DB (preferred) to avoid putting them in the token.
+    # For records created before migration b1c2d3e4f5a6, fall back to the token payload.
     payload = decrypt_confirmation_token(token, fernet_key)
 
     api_key: str = payload["api_key"]
-    order_type: str = payload.get("order_type", record.order_type)
-    order_params: dict[str, Any] = payload["order_params"]
+    order_type: str = record.order_type
+
+    if record.order_payload_json:
+        stored = json.loads(record.order_payload_json)
+        order_params: dict[str, Any] = stored["order_params"]
+    else:
+        # Backward compat: pre-migration tokens carry full payload
+        order_params = payload.get("order_params", {})
+        order_type = payload.get("order_type", record.order_type)
 
     log.info(
         "confirmation_placing_order",

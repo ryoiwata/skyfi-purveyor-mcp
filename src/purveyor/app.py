@@ -389,34 +389,46 @@ def create_app(settings: Any | None = None) -> FastAPI:
                 status_code=410,
             )
 
-        # Status is "pending" — decrypt token to render order details
-        try:
-            payload = decrypt_confirmation_token(token, cur_settings.fernet_key)
-        except ToolError:
-            # Token is cryptographically expired or invalid (key mismatch or true expiry)
-            log.warning(
-                "confirm_page_decrypt_failed",
-                token_hash_prefix=token_hash[:16],
-                record_status=record.status if record else None,
-            )
-            async with session_factory() as session:
-                rec = await get_confirmation_by_token(session, token)
-                if rec is not None and rec.status == "pending":
-                    rec.status = "expired"
-                    await session.commit()
-            return templates.TemplateResponse(
-                request,
-                "confirm.html",
-                {"state": "expired"},
-                status_code=410,
-            )
+        # Status is "pending" — load order details for rendering.
+        # New tokens store order params in DB (order_payload_json) to keep the URL
+        # token short.  Old tokens (pre-migration b1c2d3e4f5a6) carry a full payload
+        # in the Fernet token and need decryption for rendering.
+        import json as _json
 
-        order_type: str = payload.get("order_type", record.order_type)
-        order_params: dict[str, Any] = payload.get("order_params", {})
-        estimated_cost_cents: int = payload.get(
-            "estimated_cost_cents", record.estimated_cost_cents or 0
-        )
-        webhook_url: str | None = payload.get("webhook_url")
+        order_params: dict[str, Any] = {}
+        webhook_url: str | None = None
+
+        if record.order_payload_json:
+            # New path: order params in DB — no decryption needed for display
+            stored = _json.loads(record.order_payload_json)
+            order_params = stored.get("order_params", {})
+            webhook_url = stored.get("webhook_url")
+        else:
+            # Old path: full payload in Fernet token — decrypt to render
+            try:
+                payload = decrypt_confirmation_token(token, cur_settings.fernet_key)
+            except ToolError:
+                log.warning(
+                    "confirm_page_decrypt_failed",
+                    token_hash_prefix=token_hash[:16],
+                    record_status=record.status if record else None,
+                )
+                async with session_factory() as session:
+                    rec = await get_confirmation_by_token(session, token)
+                    if rec is not None and rec.status == "pending":
+                        rec.status = "expired"
+                        await session.commit()
+                return templates.TemplateResponse(
+                    request,
+                    "confirm.html",
+                    {"state": "expired"},
+                    status_code=410,
+                )
+            order_params = payload.get("order_params", {})
+            webhook_url = payload.get("webhook_url")
+
+        order_type: str = record.order_type
+        estimated_cost_cents: int = record.estimated_cost_cents or 0
 
         estimated_cost_dollars = f"${estimated_cost_cents / 100:,.2f}"
 

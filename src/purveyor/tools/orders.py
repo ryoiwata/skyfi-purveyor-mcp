@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import uuid
 from typing import Any
 
@@ -460,18 +461,11 @@ def register(mcp: FastMCP) -> None:
             webhook_url=webhook_url,
         )
 
-        # Build payload for Fernet token — must use the per-request API key so the
-        # confirmation handler can place the order under the correct account.
+        # Build Fernet token — only the API key is secret.
+        # Order params go into the DB so the URL token stays short enough
+        # for LLMs to render without truncation (~194 chars vs ~960 chars).
         api_key = get_api_key_from_ctx(ctx)
-        token_payload = {
-            "api_key": api_key,
-            "order_type": "TASKING",
-            "order_params": order_request.model_dump(by_alias=True, mode="json"),
-            "estimated_cost_cents": estimated_cost_cents,
-            "aoi_area_sq_km": round(aoi_area_sq_km, 2),
-            "price_per_sq_km": price_per_sq_km,
-            "webhook_url": webhook_url,
-        }
+        token_payload = {"api_key": api_key}
 
         try:
             token = encrypt_confirmation_token(token_payload, settings.fernet_key)
@@ -485,11 +479,18 @@ def register(mcp: FastMCP) -> None:
         # Compute api_key_hash for DB routing
         api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
+        # Store order params in DB (non-sensitive; API key stays encrypted in token)
+        order_payload_json = json.dumps({
+            "order_params": order_request.model_dump(by_alias=True, mode="json"),
+            "webhook_url": webhook_url,
+        })
+
         # Persist confirmation record
         try:
             async with session_factory() as session:
                 record = await create_confirmation(
-                    session, token, "TASKING", api_key_hash, estimated_cost_cents
+                    session, token, "TASKING", api_key_hash, estimated_cost_cents,
+                    order_payload_json=order_payload_json,
                 )
         except Exception as db_exc:
             log.error("tasking_order_db_write_failed", error=str(db_exc))
@@ -666,15 +667,7 @@ def register(mcp: FastMCP) -> None:
         )
 
         api_key = get_api_key_from_ctx(ctx)
-        token_payload = {
-            "api_key": api_key,
-            "order_type": "ARCHIVE",
-            "order_params": order_request.model_dump(by_alias=True, mode="json"),
-            "estimated_cost_cents": estimated_cost_cents,
-            "aoi_area_sq_km": round(aoi_area_sq_km, 2),
-            "price_per_sq_km": price_per_sq_km_cents / 100.0,
-            "webhook_url": webhook_url,
-        }
+        token_payload = {"api_key": api_key}
 
         try:
             token = encrypt_confirmation_token(token_payload, settings.fernet_key)
@@ -687,10 +680,17 @@ def register(mcp: FastMCP) -> None:
 
         api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
+        # Store order params in DB (non-sensitive; API key stays encrypted in token)
+        order_payload_json = json.dumps({
+            "order_params": order_request.model_dump(by_alias=True, mode="json"),
+            "webhook_url": webhook_url,
+        })
+
         try:
             async with session_factory() as session:
                 record = await create_confirmation(
-                    session, token, "ARCHIVE", api_key_hash, estimated_cost_cents
+                    session, token, "ARCHIVE", api_key_hash, estimated_cost_cents,
+                    order_payload_json=order_payload_json,
                 )
         except Exception as db_exc:
             log.error("archive_order_db_write_failed", error=str(db_exc))
