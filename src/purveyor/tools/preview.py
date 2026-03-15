@@ -14,6 +14,12 @@ def build_skyfi_preview_url(archive_id: str, aoi_wkt: str) -> str:
     return f"https://app.skyfi.com/explore/open/crop/{archive_id}?aoi={encoded_aoi}"
 
 
+def build_skyfi_explore_url(aoi_wkt: str) -> str:
+    """Build a SkyFi explore URL filtered to an AOI."""
+    encoded_aoi = quote(aoi_wkt, safe="")
+    return f"https://app.skyfi.com/explore?aoi={encoded_aoi}"
+
+
 def register(mcp: FastMCP) -> None:
     """Register preview tools on the MCP server."""
 
