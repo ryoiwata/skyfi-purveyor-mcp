@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import secrets
 import time
@@ -166,6 +167,11 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # lifespan is not triggered by FastAPI — only the root app's lifespan runs.
     mcp_session_manager = app.state.mcp_session_manager
     async with mcp_session_manager.run():
+        # Start background order status poller — fires webhook events at each stage transition
+        from purveyor.core.order_poller import run_order_poller as _run_order_poller
+
+        _poller_task = asyncio.create_task(_run_order_poller(session_factory))
+
         # Signal that the server is fully ready
         app.state.ready = True
         log.info("fastapi_startup_complete")
@@ -174,6 +180,11 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         # Cleanup
         app.state.ready = False
+        _poller_task.cancel()
+        try:
+            await _poller_task
+        except asyncio.CancelledError:
+            pass
 
     await rate_limiter.close()
     await engine.dispose()
@@ -518,6 +529,7 @@ def create_app(settings: Any | None = None) -> FastAPI:
         from purveyor.core.confirmation import (
             cancel_confirmation,
             confirm_order,
+            decrypt_confirmation_token,
             url_token_to_fernet,
         )
         from purveyor.core.errors import ErrorCode, ToolError
@@ -622,6 +634,54 @@ def create_app(settings: Any | None = None) -> FastAPI:
                     {"state": "error", "error_message": exc.message},
                     status_code=502,
                 )
+
+        # Fire the initial order-placed webhook event and register the order for
+        # ongoing status polling so all 5 stages are delivered:
+        # CREATED → STARTED → PROCESSING_PENDING → PROCESSING_COMPLETE → DELIVERY_COMPLETED
+        import json as _json_confirm
+
+        from purveyor.core.order_poller import (
+            fire_and_store_webhook as _fire_webhook,
+        )
+        from purveyor.core.order_poller import (
+            register_order_for_polling as _reg_polling,
+        )
+
+        _webhook_url: str | None = None
+        if record.order_payload_json:
+            _stored = _json_confirm.loads(record.order_payload_json)
+            _webhook_url = _stored.get("webhook_url")
+
+        if _webhook_url:
+            try:
+                _tok_payload = decrypt_confirmation_token(token, cur_settings.fernet_key)
+                _api_key: str = _tok_payload["api_key"]
+                _order_id = str(order_response.id)
+                _initial_status = str(getattr(order_response, "status", "CREATED"))
+                _order_info_dict: dict[str, Any] = order_response.model_dump(
+                    by_alias=True, mode="json"
+                )
+                _fire_task = asyncio.create_task(
+                    _fire_webhook(
+                        webhook_url=_webhook_url,
+                        order_id=_order_id,
+                        order_info_dict=_order_info_dict,
+                        event_status=_initial_status,
+                        session_factory=session_factory,
+                    )
+                )
+                _reg_task = asyncio.create_task(
+                    _reg_polling(
+                        order_id=_order_id,
+                        api_key=_api_key,
+                        webhook_url=_webhook_url,
+                        initial_status=_initial_status,
+                    )
+                )
+                # Background tasks — suppress unused-variable warning
+                del _fire_task, _reg_task
+            except Exception as _wh_exc:
+                log.warning("order_poller_post_confirm_failed", error=str(_wh_exc))
 
         return templates.TemplateResponse(
             request,
@@ -762,6 +822,8 @@ def create_app(settings: Any | None = None) -> FastAPI:
         .status {{ font-weight: bold; padding: 2px 8px; border-radius: 4px; }}
         .status-CREATED {{ background: #1f6feb33; color: #58a6ff; }}
         .status-STARTED {{ background: #d2992233; color: #d29922; }}
+        .status-PROVIDER_PENDING {{ background: #d2992233; color: #d29922; }}
+        .status-PROCESSING_PENDING {{ background: #1f6feb33; color: #58a6ff; }}
         .status-PROCESSING_COMPLETE {{ background: #23883333; color: #3fb950; }}
         .status-DELIVERY_COMPLETED {{ background: #23883333; color: #3fb950; }}
         .status-FAILED {{ background: #f8514933; color: #f85149; }}
