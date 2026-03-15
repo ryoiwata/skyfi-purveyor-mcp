@@ -281,9 +281,11 @@ async def confirm_order(
     api_key: str = payload["api_key"]
     order_type: str = record.order_type
 
+    webhook_url_for_log: str | None = None
     if record.order_payload_json:
         stored = json.loads(record.order_payload_json)
         order_params: dict[str, Any] = stored["order_params"]
+        webhook_url_for_log = stored.get("webhook_url")
     else:
         # Backward compat: pre-migration tokens carry full payload
         order_params = payload.get("order_params", {})
@@ -293,6 +295,7 @@ async def confirm_order(
         "confirmation_placing_order",
         token_hash=token_hash[:16] + "...",
         order_type=order_type,
+        webhook_url=webhook_url_for_log,
     )
 
     # --- Step 4: Place order via SkyFi using the decrypted API key ---
@@ -326,6 +329,7 @@ async def confirm_order(
         token_hash=token_hash[:16] + "...",
         skyfi_order_id=str(order_response.id),
         order_type=order_type,
+        webhook_url_in_response=getattr(order_response, "webhook_url", None),
     )
 
     return record, order_response

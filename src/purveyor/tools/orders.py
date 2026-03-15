@@ -530,6 +530,7 @@ def register(mcp: FastMCP) -> None:
             estimated_cost_cents=estimated_cost_cents,
             fernet_key_fingerprint=fernet_key_fingerprint,
             token_hash_prefix=compute_token_hash(token)[:16],
+            webhook_url=webhook_url,
         )
 
         tasking_response: dict[str, Any] = {
@@ -745,6 +746,7 @@ def register(mcp: FastMCP) -> None:
             estimated_cost_cents=estimated_cost_cents,
             fernet_key_fingerprint=fernet_key_fingerprint,
             token_hash_prefix=compute_token_hash(token)[:16],
+            webhook_url=webhook_url,
         )
 
         response: dict[str, Any] = {
