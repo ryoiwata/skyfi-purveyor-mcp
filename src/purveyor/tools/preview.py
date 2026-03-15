@@ -20,6 +20,11 @@ def build_skyfi_explore_url(aoi_wkt: str) -> str:
     return f"https://app.skyfi.com/explore?aoi={encoded_aoi}"
 
 
+def build_skyfi_order_url(order_id: str) -> str:
+    """Build a browser-friendly URL to view an order on SkyFi."""
+    return f"https://app.skyfi.com/orders/{order_id}"
+
+
 def register(mcp: FastMCP) -> None:
     """Register preview tools on the MCP server."""
 

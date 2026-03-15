@@ -13,6 +13,7 @@ from mcp.types import ToolAnnotations
 
 from purveyor.core.errors import ErrorCode, ToolError
 from purveyor.tools._helpers import get_api_key_from_ctx, get_skyfi_client
+from purveyor.tools.preview import build_skyfi_order_url
 
 McpContext = Context[Any, Any, Any]
 
@@ -129,7 +130,7 @@ def register(mcp: FastMCP) -> None:
             # skyfi_order_url is the SkyFi web-app URL for viewing the order in a browser.
             # download_image_url (from API) is an authenticated API endpoint and must NOT
             # be given to users as a clickable link — it requires X-Skyfi-Api-Key headers.
-            d["skyfi_order_url"] = f"https://app.skyfi.com/orders/{oid}" if oid else None
+            d["skyfi_order_url"] = build_skyfi_order_url(oid) if oid else None
             return d
 
         return {
@@ -177,7 +178,7 @@ def register(mcp: FastMCP) -> None:
 
         # skyfi_order_url: web-app URL for viewing the order in a browser (no auth needed).
         # download_image_url from the API is an authenticated API endpoint — NOT a browser URL.
-        skyfi_order_url = f"https://app.skyfi.com/orders/{order_id}"
+        skyfi_order_url = build_skyfi_order_url(order_id)
 
         # api_download_endpoints: internal API paths (require X-Skyfi-Api-Key header).
         # These are exposed for informational purposes only — agents should use
@@ -261,9 +262,11 @@ def register(mcp: FastMCP) -> None:
             "order_id": order_id,
             "deliverable_type": deliverable_type,
             "download_url": url,
+            "skyfi_order_url": build_skyfi_order_url(order_id),
             "summary": (
                 f"Signed download URL for {deliverable_type} of order {order_id}. "
-                "URL expires - download promptly."
+                "URL expires - download promptly. "
+                f"View order in browser: {build_skyfi_order_url(order_id)}"
             ),
         }
 
@@ -519,6 +522,7 @@ def register(mcp: FastMCP) -> None:
             "estimated_cost_cents": estimated_cost_cents,
             "estimated_cost_dollars": cost_str,
             "order_summary": summary,
+            "skyfi_orders_url": "https://app.skyfi.com/orders",
             "IMPORTANT": (
                 "Please share this URL with the user and ask them to review and confirm the order."
             ),
@@ -712,6 +716,7 @@ def register(mcp: FastMCP) -> None:
             "estimated_cost_cents": estimated_cost_cents,
             "estimated_cost_dollars": cost_str,
             "order_summary": summary,
+            "skyfi_orders_url": "https://app.skyfi.com/orders",
             "IMPORTANT": (
                 "Please share this URL with the user and ask them to review and confirm the order."
             ),
@@ -837,8 +842,9 @@ def register(mcp: FastMCP) -> None:
         return {
             "order_id": order_id,
             "redelivery_status": status,
+            "skyfi_order_url": build_skyfi_order_url(order_id),
             "summary": (
                 f"Redelivery requested for order {order_id} to {delivery_driver}. "
-                f"Status: {status}."
+                f"Status: {status}. View order: {build_skyfi_order_url(order_id)}"
             ),
         }
