@@ -30,6 +30,7 @@ class ApiProvider(StrEnum):
     NSL = "NSL"
     VEXCEL = "VEXCEL"
     ICEYE_US = "ICEYE_US"
+    VANTOR = "VANTOR"
 
 
 class ProductType(StrEnum):

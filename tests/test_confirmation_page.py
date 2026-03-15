@@ -18,7 +18,6 @@ Tests verify:
 from __future__ import annotations
 
 import os
-import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -97,7 +96,7 @@ def _persist_record(app: Any, token: str, status: str = "pending", order_type: s
             session.add(record)
             await session.commit()
 
-    asyncio.get_event_loop().run_until_complete(_write())
+    asyncio.run(_write())
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +283,7 @@ def test_token_hash_identical_after_base32_url_path_round_trip(
     record after the URL token has been encoded by fernet_to_url_token() and
     decoded by url_token_to_fernet() inside the request handler.
     """
-    from purveyor.core.confirmation import compute_token_hash, fernet_to_url_token
+    from purveyor.core.confirmation import compute_token_hash
 
     fernet_token, url_token = _make_url_token(
         fernet_key, {"api_key": "roundtrip-base32", "order_type": "ARCHIVE",
