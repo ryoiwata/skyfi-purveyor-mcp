@@ -23,6 +23,44 @@ from purveyor.core.webhook_store import order_webhook_events
 
 log = structlog.get_logger(__name__)
 
+
+async def _rehydrate_webhook_store(session_factory: Any) -> None:
+    """Populate the in-memory webhook deque from persisted DB rows on startup.
+
+    Loads up to 100 most-recent ``demo_order_webhook`` rows ordered newest-first
+    so the deque matches the live ordering.  Runs once during lifespan startup.
+    """
+    import json as _json
+
+    from sqlalchemy import select
+
+    from purveyor.models.tables import WebhookEvent
+
+    try:
+        async with session_factory() as session:
+            stmt = (
+                select(WebhookEvent)
+                .where(WebhookEvent.event_type == "demo_order_webhook")
+                .order_by(WebhookEvent.created_at.desc())
+                .limit(100)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+
+        # Rows are newest-first; appendleft would reverse them.
+        # Insert oldest-first via append so the deque ends up newest-at-index-0.
+        for row in reversed(rows):
+            try:
+                event = _json.loads(row.payload)
+            except Exception as exc:
+                log.warning("webhook_store_rehydration_bad_row", error=str(exc))
+                continue
+            order_webhook_events.appendleft(event)
+
+        log.info("webhook_store_rehydrated", count=len(order_webhook_events))
+    except Exception as exc:
+        log.warning("webhook_store_rehydration_failed", error=str(exc))
+
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
@@ -111,6 +149,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.session_factory = session_factory
     # Flag: use SKIP LOCKED only for Postgres
     app.state.use_skip_locked = "postgresql" in settings.database_url
+
+    # Rehydrate the demo webhook store from DB so events survive container restarts
+    await _rehydrate_webhook_store(session_factory)
     # Shared secret for webhook endpoint authentication
     app.state.webhook_secret = secrets.token_urlsafe(32)
 
@@ -599,21 +640,43 @@ def create_app(settings: Any | None = None) -> FastAPI:
     async def receive_order_webhook(request: Request) -> JSONResponse:
         """Receive order status webhooks from SkyFi for demo/testing purposes.
 
-        Stores up to 100 recent events in memory (not persisted across restarts).
+        Stores events in the in-memory deque AND persists to the webhook_events
+        table so they survive container restarts.
         Returns 200 immediately — SkyFi has a 2-second webhook timeout.
         """
+        import json as _json
+
+        from purveyor.models.tables import WebhookEvent
+
         try:
             body = await request.json()
         except Exception:
             body = {}
-        order_webhook_events.appendleft(
-            {
-                "received_at": datetime.datetime.now(datetime.UTC).strftime(
-                    "%Y-%m-%dT%H:%M:%SZ"
-                ),
-                "payload": body,
-            }
-        )
+
+        event: dict[str, Any] = {
+            "received_at": datetime.datetime.now(datetime.UTC).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "payload": body,
+        }
+        order_webhook_events.appendleft(event)
+
+        # Persist to DB — wrapped in try/except so the POST always returns 200
+        session_factory = getattr(request.app.state, "session_factory", None)
+        if session_factory is not None:
+            try:
+                async with session_factory() as session:
+                    db_row = WebhookEvent(
+                        event_type="demo_order_webhook",
+                        payload=_json.dumps(event),
+                        api_key_hash=None,
+                        delivered=True,
+                    )
+                    session.add(db_row)
+                    await session.commit()
+            except Exception as exc:
+                log.warning("demo_webhook_persist_failed", error=str(exc))
+
         log.info(
             "demo_webhook_received",
             total_stored=len(order_webhook_events),
