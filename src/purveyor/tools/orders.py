@@ -314,9 +314,13 @@ def register(mcp: FastMCP) -> None:
             provider_window_id: Provider-specific window ID from pass predictions.
             priority: Whether to mark as a priority item.
             metadata: Optional metadata dict to attach to the order.
-            webhook_url: Optional URL to receive order status updates via webhook.
+            webhook_url: URL to receive ORDER STATUS UPDATES for this specific tasking order.
+                Pass this when the user asks to be notified about order progress or
+                wants status updates sent to an external URL (e.g. webhook.site, Slack, etc.).
                 SkyFi will POST to this URL whenever the order status changes
                 (e.g. CREATED, STARTED, PROCESSING_COMPLETE, DELIVERY_COMPLETED).
+                NOTE: This is different from setup_monitoring which alerts about NEW imagery
+                becoming available. This webhook is only for tracking THIS order's status.
         """
         log.info("tool_create_tasking_order", location=location[:50], product_type=product_type)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
@@ -506,10 +510,15 @@ def register(mcp: FastMCP) -> None:
         cost_str = f"${estimated_cost_cents / 100:.2f}"
         area_str = f"{aoi_area_sq_km:.1f} sq km" if aoi_area_sq_km else "unknown area"
 
+        webhook_note = (
+            f" Order status updates will be POSTed to: {webhook_url}"
+            if webhook_url else ""
+        )
         summary = (
             f"Tasking order for {product_type} / {resolution} over {area_str}. "
             f"Estimated cost: {cost_str}. "
-            f"Window: {ws.date()} to {we.date()}. "
+            f"Window: {ws.date()} to {we.date()}."
+            f"{webhook_note} "
             "Share the confirmation URL with the user for review and approval. "
             "Open the confirmation link in your browser to review and approve the order."
         )
@@ -523,7 +532,7 @@ def register(mcp: FastMCP) -> None:
             token_hash_prefix=compute_token_hash(token)[:16],
         )
 
-        return {
+        tasking_response: dict[str, Any] = {
             "confirmation_url": confirmation_url,
             "confirmation_id": str(record.id),
             "estimated_cost_cents": estimated_cost_cents,
@@ -534,6 +543,13 @@ def register(mcp: FastMCP) -> None:
                 "Please share this URL with the user and ask them to review and confirm the order."
             ),
         }
+        if webhook_url:
+            tasking_response["webhook_url_registered"] = webhook_url
+            tasking_response["webhook_note"] = (
+                "SkyFi will POST order status updates to this URL as the order progresses "
+                "(CREATED → PROCESSING_COMPLETE → DELIVERY_COMPLETED)."
+            )
+        return tasking_response
 
     @mcp.tool(
         annotations=ToolAnnotations(
@@ -562,9 +578,13 @@ def register(mcp: FastMCP) -> None:
             delivery_driver: Delivery destination (NONE, S3, GS, AZURE, etc.).
             delivery_params: Delivery credentials dict for the chosen driver.
             metadata: Optional metadata dict to attach to the order.
-            webhook_url: Optional URL to receive order status updates via webhook.
+            webhook_url: URL to receive ORDER STATUS UPDATES for this specific order.
+                Pass this when the user asks to be notified about order progress or
+                wants status updates sent to an external URL (e.g. webhook.site, Slack, etc.).
                 SkyFi will POST to this URL whenever the order status changes
                 (e.g. CREATED, STARTED, PROCESSING_COMPLETE, DELIVERY_COMPLETED).
+                NOTE: This is different from setup_monitoring which alerts about NEW imagery
+                becoming available. This webhook is only for tracking THIS order's status.
         """
         log.info("tool_create_archive_order", archive_id=archive_id)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
@@ -706,9 +726,14 @@ def register(mcp: FastMCP) -> None:
         provider = getattr(archive, "provider", "unknown")
         resolution = getattr(archive, "resolution", "unknown")
 
+        webhook_note = (
+            f" Order status updates will be POSTed to: {webhook_url}"
+            if webhook_url else ""
+        )
         summary = (
             f"Archive order for {provider} / {resolution} scene. "
-            f"AOI: {aoi_area_sq_km:.1f} sq km. Estimated cost: {cost_str}. "
+            f"AOI: {aoi_area_sq_km:.1f} sq km. Estimated cost: {cost_str}."
+            f"{webhook_note} "
             "Share the confirmation URL with the user for review and approval. "
             "Open the confirmation link in your browser to review and approve the order."
         )
@@ -722,7 +747,7 @@ def register(mcp: FastMCP) -> None:
             token_hash_prefix=compute_token_hash(token)[:16],
         )
 
-        return {
+        response: dict[str, Any] = {
             "confirmation_url": confirmation_url,
             "confirmation_id": str(record.id),
             "estimated_cost_cents": estimated_cost_cents,
@@ -733,6 +758,13 @@ def register(mcp: FastMCP) -> None:
                 "Please share this URL with the user and ask them to review and confirm the order."
             ),
         }
+        if webhook_url:
+            response["webhook_url_registered"] = webhook_url
+            response["webhook_note"] = (
+                "SkyFi will POST order status updates to this URL as the order progresses "
+                "(CREATED → PROCESSING_COMPLETE → DELIVERY_COMPLETED)."
+            )
+        return response
 
     @mcp.tool(
         annotations=ToolAnnotations(

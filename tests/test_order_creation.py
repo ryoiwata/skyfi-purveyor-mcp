@@ -212,6 +212,52 @@ async def test_create_archive_order_returns_confirmation_url(
     assert "IMPORTANT" in result
 
 
+async def test_create_archive_order_with_webhook_url(db_session_factory: Any) -> None:
+    """create_archive_order stores webhook_url in order_payload_json for SkyFi on confirmation."""
+    import json
+
+    from sqlalchemy import select
+
+    from purveyor.models.tables import OrderConfirmation
+
+    settings = _make_settings(db_session_factory)
+    archive = _make_archive()
+
+    cached_client = MagicMock()
+    cached_client.get_archive = AsyncMock(return_value=archive)
+    cached_client.create_archive_order = AsyncMock()  # Should NOT be called yet
+
+    wkt = "POLYGON((-97.72 30.28, -97.72 30.24, -97.76 30.24, -97.76 30.28, -97.72 30.28))"
+    webhook = "https://webhook.site/19238b05-6959-434f-93da-5676be689e55"
+
+    tool_fn = mcp._tool_manager.get_tool("create_archive_order").fn
+    result = await tool_fn(
+        aoi=wkt,
+        archive_id=archive.archive_id,
+        webhook_url=webhook,
+        ctx=_make_ctx(cached_client, settings, db_session_factory),
+    )
+
+    # Tool returns confirmation URL, not an order
+    cached_client.create_archive_order.assert_not_called()
+    assert isinstance(result, dict)
+    assert "confirmation_url" in result
+    assert result.get("webhook_url_registered") == webhook
+    assert "webhook_note" in result
+
+    # Verify webhook_url is stored in order_payload_json in the DB
+    async with db_session_factory() as session:
+        stmt = select(OrderConfirmation).where(OrderConfirmation.status == "pending")
+        row = (await session.execute(stmt)).scalar_one()
+
+    assert row.order_payload_json is not None
+    stored = json.loads(row.order_payload_json)
+    # webhook_url stored at top-level for backward compat display
+    assert stored["webhook_url"] == webhook
+    # webhook_url also embedded in order_params as webhookUrl for SkyFi
+    assert stored["order_params"]["webhookUrl"] == webhook
+
+
 async def test_create_archive_order_archive_not_found(db_session_factory: Any) -> None:
     """create_archive_order when archive fetch fails returns error."""
     from mcp.types import CallToolResult
