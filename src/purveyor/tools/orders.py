@@ -15,7 +15,7 @@ from mcp.types import ToolAnnotations
 from purveyor.core.constants import SKYFI_MAX_AOI_KM2, SKYFI_MIN_AOI_KM2
 from purveyor.core.errors import ErrorCode, ToolError
 from purveyor.tools._helpers import get_api_key_from_ctx, get_skyfi_client
-from purveyor.tools.preview import build_skyfi_order_url
+from purveyor.tools.preview import build_skyfi_order_url, build_skyfi_preview_url
 
 McpContext = Context[Any, Any, Any]
 
@@ -128,6 +128,12 @@ def register(mcp: FastMCP) -> None:
             # download_image_url (from API) is an authenticated API endpoint and must NOT
             # be given to users as a clickable link — it requires X-Skyfi-Api-Key headers.
             d["skyfi_order_url"] = build_skyfi_order_url(oid) if oid else None
+            # For archive orders: add skyfi_preview_url using archive_id + order AOI.
+            # If no AOI is available, omit the URL — never fall back to explore/archive links.
+            archive_id = d.get("archive_id")
+            order_aoi = d.get("aoi")
+            if archive_id and order_aoi:
+                d["skyfi_preview_url"] = build_skyfi_preview_url(str(archive_id), order_aoi)
             return d
 
         return {
@@ -205,6 +211,15 @@ def register(mcp: FastMCP) -> None:
 
         order_dict: dict[str, Any] = order.model_dump(mode="json")
         order_dict["skyfi_order_url"] = skyfi_order_url
+
+        # For archive orders: add skyfi_preview_url using archive_id + order AOI.
+        # If no AOI is available, omit the URL — never fall back to explore/archive links.
+        archive_id = order_dict.get("archive_id")
+        order_aoi = order_dict.get("aoi")
+        if archive_id and order_aoi:
+            order_dict["skyfi_preview_url"] = build_skyfi_preview_url(
+                str(archive_id), order_aoi
+            )
 
         return {
             "order": order_dict,
@@ -768,6 +783,8 @@ def register(mcp: FastMCP) -> None:
         response: dict[str, Any] = {
             "confirmation_url": confirmation_url,
             "confirmation_id": str(record.id),
+            "archive_id": archive_id,
+            "skyfi_preview_url": build_skyfi_preview_url(archive_id, aoi),
             "estimated_cost_cents": estimated_cost_cents,
             "estimated_cost_dollars": cost_str,
             "aoi_area_km2": round(aoi_area_sq_km, 2),

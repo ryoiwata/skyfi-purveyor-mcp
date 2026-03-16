@@ -309,9 +309,9 @@ async def test_search_archives_includes_aoi_area() -> None:
 
 @pytest.mark.asyncio
 async def test_search_archives_has_only_preview_url_no_skyfi_url() -> None:
-    """search_archives returns preview_url per archive and NOT skyfi_url.
+    """search_archives returns skyfi_preview_url per archive and NOT skyfi_archive_url.
 
-    skyfi_url (/explore/archive/{id}) is excluded because it fails for some
+    skyfi_archive_url (/explore/archive/{id}) is excluded because it fails for some
     providers (e.g. Sentinel) and causes agents to navigate to the wrong page.
     """
     from purveyor.core.skyfi_types import ApiProvider, ArchiveResponse, GetArchivesResponse
@@ -360,6 +360,6 @@ async def test_search_archives_has_only_preview_url_no_skyfi_url() -> None:
 
     assert isinstance(result, dict)
     archive_result = result["archives"][0]
-    assert "preview_url" in archive_result
-    assert "/explore/open/crop/" in archive_result["preview_url"]
-    assert "skyfi_url" not in archive_result
+    assert "skyfi_preview_url" in archive_result
+    assert "/explore/open/crop/" in archive_result["skyfi_preview_url"]
+    assert "skyfi_archive_url" not in archive_result
