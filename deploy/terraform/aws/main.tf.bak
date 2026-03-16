@@ -242,10 +242,7 @@ resource "random_bytes" "fernet_key" {
 resource "aws_ssm_parameter" "confirmation_secret_key" {
   name  = "/${local.name}/CONFIRMATION_SECRET_KEY"
   type  = "SecureString"
-  # random_bytes.fernet_key.base64 is already the URL-safe base64 encoding of 32
-  # random bytes — exactly what Fernet requires.  Do NOT wrap in base64encode()
-  # again; that produces double-encoded output that Fernet rejects at startup.
-  value = random_bytes.fernet_key.base64
+  value = base64encode(random_bytes.fernet_key.base64)
   lifecycle {
     ignore_changes = [value]
   }
@@ -282,22 +279,6 @@ resource "aws_iam_role" "execution" {
 resource "aws_iam_role_policy_attachment" "execution" {
   role       = aws_iam_role.execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-}
-
-resource "aws_iam_role_policy" "execution_ssm" {
-  name = "${local.name}-execution-ssm"
-  role = aws_iam_role.execution.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:GetParameters"]
-        Resource = "arn:aws:ssm:${var.region}:*:parameter/${local.name}/*"
-      }
-    ]
-  })
 }
 
 resource "aws_iam_role" "task" {
@@ -371,10 +352,7 @@ resource "aws_ecs_task_definition" "main" {
         { name = "CACHE_BACKEND", value = var.enable_redis ? "redis" : "memory" },
         { name = "REDIS_URL", value = local.redis_url },
         { name = "LOG_LEVEL", value = var.log_level },
-        # Use explicit var.domain if provided; fall back to the ALB DNS name (HTTP only).
-        # Once an ACM certificate and HTTPS listener are added, set var.domain to your
-        # custom domain and this will produce a valid https:// URL automatically.
-        { name = "CONFIRMATION_BASE_URL", value = var.domain != "" ? "https://${var.domain}" : "http://${aws_lb.main.dns_name}" },
+        { name = "CONFIRMATION_BASE_URL", value = "https://${var.domain}" },
         { name = "SENTRY_DSN", value = var.sentry_dsn },
       ]
 
@@ -417,9 +395,9 @@ resource "aws_ecs_service" "main" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = aws_subnet.public[*].id
+    subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.app.id]
-    assign_public_ip = true
+    assign_public_ip = false
   }
 
   load_balancer {
@@ -428,7 +406,7 @@ resource "aws_ecs_service" "main" {
     container_port   = 8000
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [aws_lb_listener.https]
 }
 
 # ---------------------------------------------------------------------------
@@ -458,10 +436,11 @@ resource "aws_lb_target_group" "main" {
   }
 }
 
-resource "aws_lb_listener" "http" {
+resource "aws_lb_listener" "https" {
   load_balancer_arn = aws_lb.main.arn
-  port              = 80
-  protocol          = "HTTP"
+  port              = 443
+  protocol          = "HTTPS"
+  certificate_arn   = var.acm_certificate_arn
 
   default_action {
     type             = "forward"
@@ -469,3 +448,17 @@ resource "aws_lb_listener" "http" {
   }
 }
 
+resource "aws_lb_listener" "http_redirect" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}

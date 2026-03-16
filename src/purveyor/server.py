@@ -8,6 +8,7 @@ from typing import Any
 
 import structlog
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from purveyor import __version__
 from purveyor.core.cache import CachedSkyFiClient, get_cache_backend
@@ -44,12 +45,20 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     client = SkyFiClient(api_key=api_key)
     cached_client = CachedSkyFiClient(client, cache)
 
+    def make_client(key: str) -> CachedSkyFiClient:
+        """Create a per-request CachedSkyFiClient with the given API key.
+
+        Used in cloud mode to build a client from the X-Skyfi-Api-Key header.
+        """
+        return CachedSkyFiClient(SkyFiClient(api_key=key), cache)
+
     log.info("purveyor_ready")
 
     try:
         yield {
             "settings": settings,
             "cached_client": cached_client,
+            "make_client": make_client,
             "cache": cache,
             "session_factory": session_factory,
         }
@@ -59,10 +68,14 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         await engine.dispose()
 
 
-# Create the MCP server instance
+# Create the MCP server instance.
+# DNS rebinding protection is disabled: the X-Skyfi-Api-Key header is the auth
+# boundary (per DESIGN_DECISIONS §CORS). Purveyor runs behind a load balancer
+# whose hostname would otherwise fail host validation.
 mcp = FastMCP(
     "purveyor",
     lifespan=lifespan,
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
@@ -75,15 +88,19 @@ def _register_all() -> None:
     from purveyor.tools.geospatial import register as register_geospatial
     from purveyor.tools.notifications import register as register_notifications
     from purveyor.tools.orders import register as register_orders
+    from purveyor.tools.preview import register as register_preview
     from purveyor.tools.pricing import register as register_pricing
+    from purveyor.tools.webhook_events import register as register_webhook_events
 
     register_geospatial(mcp)
     register_archives(mcp)
+    register_preview(mcp)
     register_pricing(mcp)
     register_feasibility(mcp)
     register_orders(mcp)
     register_account(mcp)
     register_notifications(mcp)
+    register_webhook_events(mcp)
     register_resources(mcp)
 
 

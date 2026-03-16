@@ -9,6 +9,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from purveyor.core.errors import ErrorCode, ToolError
+from purveyor.tools._helpers import get_skyfi_client
 
 McpContext = Context[Any, Any, Any]
 
@@ -34,8 +35,7 @@ def register(mcp: FastMCP) -> None:
         Cached for 5 minutes.
         """
         log.info("tool_whoami")
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         try:
             user = await cached_client.whoami()

@@ -1,6 +1,7 @@
 # Environment and secrets
 .env
 .env.*
+agents/**/.env
 *.pem
 *.key
 config.json
@@ -70,3 +71,9 @@ firebase-debug.log
 
 # HashiCorp
 hashicorp-archive-keyring.gpg
+
+# ADK
+.adk/
+
+# Playwright MCP
+.playwright-mcp/

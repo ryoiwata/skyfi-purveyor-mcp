@@ -9,6 +9,7 @@ WORKDIR /app
 # Copy dependency specs first for layer caching
 COPY pyproject.toml ./
 COPY src/ ./src/
+COPY README.md ./
 
 # Install all dependencies into the virtual environment
 RUN uv sync --no-dev
@@ -35,9 +36,11 @@ COPY --from=builder --chown=purveyor:purveyor /app/src ./src
 COPY --from=builder --chown=purveyor:purveyor /app/pyproject.toml ./pyproject.toml
 COPY --chown=purveyor:purveyor alembic/ ./alembic/
 COPY --chown=purveyor:purveyor alembic.ini ./alembic.ini
+COPY --chown=purveyor:purveyor deploy/docker/entrypoint.sh ./entrypoint.sh
 
 # Create data directory for SQLite (local mode)
-RUN mkdir -p /app/data && chown purveyor:purveyor /app/data
+RUN mkdir -p /app/data && chown purveyor:purveyor /app/data && \
+    chmod +x /app/entrypoint.sh
 
 USER purveyor
 
@@ -46,5 +49,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-ENTRYPOINT ["uv", "run", "purveyor"]
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["serve"]

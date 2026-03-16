@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import uuid
 from typing import Any
 
@@ -12,10 +13,17 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from purveyor.core.errors import ErrorCode, ToolError
+from purveyor.tools._helpers import get_api_key_from_ctx, get_skyfi_client
+from purveyor.tools.preview import build_skyfi_order_url
 
 McpContext = Context[Any, Any, Any]
 
 log = structlog.get_logger(__name__)
+
+# SkyFi order AOI size limits (sq km) — validated client-side before token creation
+# to avoid surfacing the error only after the user clicks the confirmation link.
+SKYFI_MIN_AOI_KM2 = 5.0
+SKYFI_MAX_AOI_KM2 = 10_000.0
 
 
 def register(mcp: FastMCP) -> None:
@@ -46,8 +54,7 @@ def register(mcp: FastMCP) -> None:
             sort_dir: Sort direction (asc or desc).
         """
         log.info("tool_list_orders", order_type=order_type)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         from purveyor.core.skyfi_types import OrderType, SortColumn, SortDirection
 
@@ -118,8 +125,17 @@ def register(mcp: FastMCP) -> None:
                     f"Most recent: {order_type_name} order created {latest_date.date()}."
                 )
 
+        def _order_with_web_url(o: Any) -> dict[str, Any]:
+            d: dict[str, Any] = o.model_dump(mode="json")
+            oid = d.get("order_id") or d.get("id") or str(getattr(o, "order_id", ""))
+            # skyfi_order_url is the SkyFi web-app URL for viewing the order in a browser.
+            # download_image_url (from API) is an authenticated API endpoint and must NOT
+            # be given to users as a clickable link — it requires X-Skyfi-Api-Key headers.
+            d["skyfi_order_url"] = build_skyfi_order_url(oid) if oid else None
+            return d
+
         return {
-            "orders": [o.model_dump(mode="json") for o in orders],
+            "orders": [_order_with_web_url(o) for o in orders],
             "total": total,
             "page": page,
             "summary": " ".join(summary_parts),
@@ -145,8 +161,7 @@ def register(mcp: FastMCP) -> None:
             order_id: The order UUID.
         """
         log.info("tool_get_order_status", order_id=order_id)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         try:
             order = await cached_client.get_order(order_id)
@@ -162,30 +177,44 @@ def register(mcp: FastMCP) -> None:
         cost_cents = getattr(order, "order_cost", None)
         created_at = getattr(order, "created_at", None)
 
-        # Collect download URLs for completed orders
-        download_urls: dict[str, str | None] = {}
+        # skyfi_order_url: web-app URL for viewing the order in a browser (no auth needed).
+        # download_image_url from the API is an authenticated API endpoint — NOT a browser URL.
+        skyfi_order_url = build_skyfi_order_url(order_id)
+
+        # api_download_endpoints: internal API paths (require X-Skyfi-Api-Key header).
+        # These are exposed for informational purposes only — agents should use
+        # download_deliverable to get a time-limited signed URL for actual downloading.
+        api_download_endpoints: dict[str, str | None] = {}
         if status == "DELIVERY_COMPLETED":
-            download_urls = {
+            api_download_endpoints = {
                 "image": getattr(order, "download_image_url", None),
                 "payload": getattr(order, "download_payload_url", None),
                 "cog": getattr(order, "download_cog_url", None),
             }
-            download_urls = {k: v for k, v in download_urls.items() if v}
+            api_download_endpoints = {k: v for k, v in api_download_endpoints.items() if v}
 
         cost_str = f"${cost_cents / 100:.2f}" if cost_cents else "N/A"
         date_str = created_at.date().isoformat() if created_at else "N/A"
 
         summary = (
             f"{order_type} order {order_id}: status {status}. "
-            f"Cost: {cost_str}. Created: {date_str}."
+            f"Cost: {cost_str}. Created: {date_str}. "
+            f"View order: {skyfi_order_url}"
         )
-        if download_urls:
-            summary += f" {len(download_urls)} deliverable(s) available for download."
+        if api_download_endpoints:
+            summary += (
+                f" {len(api_download_endpoints)} deliverable(s) ready."
+                " Use download_deliverable to get a signed download URL."
+            )
+
+        order_dict: dict[str, Any] = order.model_dump(mode="json")
+        order_dict["skyfi_order_url"] = skyfi_order_url
 
         return {
-            "order": order.model_dump(mode="json"),
+            "order": order_dict,
             "status": status,
-            "download_urls": download_urls,
+            "skyfi_order_url": skyfi_order_url,
+            "api_download_endpoints": api_download_endpoints,
             "summary": summary,
         }
 
@@ -208,8 +237,7 @@ def register(mcp: FastMCP) -> None:
             deliverable_type: Deliverable type — image, payload, or cog.
         """
         log.info("tool_download_deliverable", order_id=order_id, deliverable_type=deliverable_type)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         from purveyor.core.skyfi_types import DeliverableType
 
@@ -235,9 +263,11 @@ def register(mcp: FastMCP) -> None:
             "order_id": order_id,
             "deliverable_type": deliverable_type,
             "download_url": url,
+            "skyfi_order_url": build_skyfi_order_url(order_id),
             "summary": (
                 f"Signed download URL for {deliverable_type} of order {order_id}. "
-                "URL expires - download promptly."
+                "URL expires - download promptly. "
+                f"View order in browser: {build_skyfi_order_url(order_id)}"
             ),
         }
 
@@ -263,6 +293,7 @@ def register(mcp: FastMCP) -> None:
         provider_window_id: str | None = None,
         priority: bool = False,
         metadata: dict[str, Any] | None = None,
+        webhook_url: str | None = None,
     ) -> Any:
         """Create a tasking order request. Returns a confirmation URL for human review.
 
@@ -283,17 +314,26 @@ def register(mcp: FastMCP) -> None:
             provider_window_id: Provider-specific window ID from pass predictions.
             priority: Whether to mark as a priority item.
             metadata: Optional metadata dict to attach to the order.
+            webhook_url: URL to receive ORDER STATUS UPDATES for this specific tasking order.
+                Pass this when the user asks to be notified about order progress or
+                wants status updates sent to an external URL (e.g. webhook.site, Slack, etc.).
+                SkyFi will POST to this URL whenever the order status changes
+                (e.g. CREATED, STARTED, PROCESSING_COMPLETE, DELIVERY_COMPLETED).
+                NOTE: This is different from setup_monitoring which alerts about NEW imagery
+                becoming available. This webhook is only for tracking THIS order's status.
         """
         log.info("tool_create_tasking_order", location=location[:50], product_type=product_type)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
         settings = lc["settings"]
         session_factory = lc["session_factory"]
         cache = lc["cache"]
 
         from purveyor.core.confirmation import (
+            compute_token_hash,
             create_confirmation,
             encrypt_confirmation_token,
+            fernet_to_url_token,
         )
         from purveyor.core.skyfi_types import (
             AzureDeliveryParams,
@@ -340,6 +380,26 @@ def register(mcp: FastMCP) -> None:
             aoi_area_sq_km = await asyncio.to_thread(_calculate_area_sq_km, polygon)
         except Exception:
             aoi_area_sq_km = 0.0
+
+        # Validate AOI size against SkyFi order limits before creating the token
+        if aoi_area_sq_km > SKYFI_MAX_AOI_KM2:
+            return ToolError(
+                code=ErrorCode.AOI_TOO_LARGE,
+                message=(
+                    f"AOI too large ({aoi_area_sq_km:.1f} km²). SkyFi maximum for orders is "
+                    f"{SKYFI_MAX_AOI_KM2:,.0f} km². Try creating a smaller AOI using "
+                    "create_aoi_from_point with a smaller radius, or geocode a more specific location."  # noqa: E501
+                ),
+            ).to_call_tool_result()
+        if 0 < aoi_area_sq_km < SKYFI_MIN_AOI_KM2:
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"AOI too small ({aoi_area_sq_km:.1f} km²). SkyFi minimum for orders is "
+                    f"{SKYFI_MIN_AOI_KM2} km². Try creating a larger AOI using "
+                    "create_aoi_from_point with a bigger radius."
+                ),
+            ).to_call_tool_result()
 
         # Estimate cost via pricing API
         estimated_cost_cents = 0
@@ -402,63 +462,95 @@ def register(mcp: FastMCP) -> None:
             required_provider=provider,  # type: ignore[arg-type]
             provider_window_id=uuid.UUID(provider_window_id) if provider_window_id else None,
             metadata=metadata,
+            webhook_url=webhook_url,
         )
 
-        # Build payload for Fernet token
-        api_key = settings.skyfi_api_key or ""
-        # NOTE: In cloud mode, the per-request API key should come from the request
-        # auth context. For now, local mode uses settings.skyfi_api_key.
-        token_payload = {
-            "api_key": api_key,
-            "order_type": "TASKING",
-            "order_params": order_request.model_dump(by_alias=True, mode="json"),
-            "estimated_cost_cents": estimated_cost_cents,
-            "aoi_area_sq_km": round(aoi_area_sq_km, 2),
-            "price_per_sq_km": price_per_sq_km,
-        }
+        # Build Fernet token — only the API key is secret.
+        # Order params go into the DB so the URL token stays short enough
+        # for LLMs to render without truncation (~194 chars vs ~960 chars).
+        api_key = get_api_key_from_ctx(ctx)
+        token_payload = {"api_key": api_key}
 
-        token = encrypt_confirmation_token(token_payload, settings.fernet_key)
+        try:
+            token = encrypt_confirmation_token(token_payload, settings.fernet_key)
+        except Exception as enc_exc:
+            log.error("tasking_order_token_encrypt_failed", error=str(enc_exc))
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Failed to create confirmation token: {enc_exc}",
+            ).to_call_tool_result()
 
         # Compute api_key_hash for DB routing
         api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
+        # Store order params in DB (non-sensitive; API key stays encrypted in token)
+        order_payload_json = json.dumps({
+            "order_params": order_request.model_dump(by_alias=True, mode="json"),
+            "webhook_url": webhook_url,
+        })
+
         # Persist confirmation record
-        async with session_factory() as session:
-            record = await create_confirmation(
-                session, token, "TASKING", api_key_hash, estimated_cost_cents
-            )
+        try:
+            async with session_factory() as session:
+                record = await create_confirmation(
+                    session, token, "TASKING", api_key_hash, estimated_cost_cents,
+                    order_payload_json=order_payload_json,
+                )
+        except Exception as db_exc:
+            log.error("tasking_order_db_write_failed", error=str(db_exc))
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Failed to save confirmation record: {db_exc}",
+            ).to_call_tool_result()
 
         # Build confirmation URL
         base = (settings.confirmation_base_url or f"http://localhost:{settings.server_port}").rstrip("/")
-        confirmation_url = f"{base}/confirm/{token}"
+        confirmation_url = f"{base}/confirm/{fernet_to_url_token(token)}"
 
         cost_str = f"${estimated_cost_cents / 100:.2f}"
         area_str = f"{aoi_area_sq_km:.1f} sq km" if aoi_area_sq_km else "unknown area"
 
+        webhook_note = (
+            f" Order status updates will be POSTed to: {webhook_url}"
+            if webhook_url else ""
+        )
         summary = (
             f"Tasking order for {product_type} / {resolution} over {area_str}. "
             f"Estimated cost: {cost_str}. "
-            f"Window: {ws.date()} to {we.date()}. "
+            f"Window: {ws.date()} to {we.date()}."
+            f"{webhook_note} "
             "Share the confirmation URL with the user for review and approval. "
             "Open the confirmation link in your browser to review and approve the order."
         )
 
+        fernet_key_fingerprint = hashlib.sha256(settings.fernet_key).hexdigest()[:8]
         log.info(
             "tasking_order_confirmation_created",
             confirmation_id=str(record.id),
             estimated_cost_cents=estimated_cost_cents,
+            fernet_key_fingerprint=fernet_key_fingerprint,
+            token_hash_prefix=compute_token_hash(token)[:16],
+            webhook_url=webhook_url,
         )
 
-        return {
+        tasking_response: dict[str, Any] = {
             "confirmation_url": confirmation_url,
             "confirmation_id": str(record.id),
             "estimated_cost_cents": estimated_cost_cents,
             "estimated_cost_dollars": cost_str,
             "order_summary": summary,
+            "skyfi_orders_url": "https://app.skyfi.com/orders",
             "IMPORTANT": (
                 "Please share this URL with the user and ask them to review and confirm the order."
             ),
         }
+        if webhook_url:
+            tasking_response["webhook_url_registered"] = webhook_url
+            tasking_response["webhook_note"] = (
+                "SkyFi will POST order status updates to this URL as the order progresses "
+                "(CREATED → PROCESSING_COMPLETE → DELIVERY_COMPLETED)."
+            )
+        return tasking_response
 
     @mcp.tool(
         annotations=ToolAnnotations(
@@ -474,6 +566,7 @@ def register(mcp: FastMCP) -> None:
         delivery_driver: str = "NONE",
         delivery_params: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        webhook_url: str | None = None,
     ) -> Any:
         """Create an archive order request. Returns a confirmation URL for human review.
 
@@ -486,16 +579,25 @@ def register(mcp: FastMCP) -> None:
             delivery_driver: Delivery destination (NONE, S3, GS, AZURE, etc.).
             delivery_params: Delivery credentials dict for the chosen driver.
             metadata: Optional metadata dict to attach to the order.
+            webhook_url: URL to receive ORDER STATUS UPDATES for this specific order.
+                Pass this when the user asks to be notified about order progress or
+                wants status updates sent to an external URL (e.g. webhook.site, Slack, etc.).
+                SkyFi will POST to this URL whenever the order status changes
+                (e.g. CREATED, STARTED, PROCESSING_COMPLETE, DELIVERY_COMPLETED).
+                NOTE: This is different from setup_monitoring which alerts about NEW imagery
+                becoming available. This webhook is only for tracking THIS order's status.
         """
         log.info("tool_create_archive_order", archive_id=archive_id)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
         settings = lc["settings"]
         session_factory = lc["session_factory"]
 
         from purveyor.core.confirmation import (
+            compute_token_hash,
             create_confirmation,
             encrypt_confirmation_token,
+            fernet_to_url_token,
         )
         from purveyor.core.skyfi_types import (
             ArchiveOrderRequest,
@@ -542,6 +644,30 @@ def register(mcp: FastMCP) -> None:
         except Exception as area_exc:
             log.warning("archive_area_calc_failed", error=str(area_exc))
 
+        # Validate AOI size against THIS archive's own min/max limits (per-archive,
+        # not a global constant — SkyFi reports them in the error as min <= actual <= max).
+        archive_min = archive.min_sq_km
+        archive_max = archive.max_sq_km
+        if aoi_area_sq_km > archive_max:
+            return ToolError(
+                code=ErrorCode.AOI_TOO_LARGE,
+                message=(
+                    f"AOI too large ({aoi_area_sq_km:.1f} km²). "
+                    f"This archive supports a maximum of {archive_max:.0f} km². "
+                    "Try create_aoi_from_point with a smaller radius, "
+                    "or geocode a more specific location."
+                ),
+            ).to_call_tool_result()
+        if 0 < aoi_area_sq_km < archive_min:
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"AOI too small ({aoi_area_sq_km:.1f} km²). "
+                    f"This archive requires a minimum of {archive_min:.0f} km². "
+                    "Try create_aoi_from_point with a bigger radius."
+                ),
+            ).to_call_tool_result()
+
         # Estimate cost from archive pricing
         price_per_sq_km_cents = getattr(archive, "price_for_one_square_km_cents", 0) or 0
         estimated_cost_cents = int(price_per_sq_km_cents * aoi_area_sq_km)
@@ -558,56 +684,89 @@ def register(mcp: FastMCP) -> None:
             delivery_driver=driver_enum,
             delivery_params=delivery_params,
             metadata=metadata,
+            webhook_url=webhook_url,
         )
 
-        api_key = settings.skyfi_api_key or ""
-        token_payload = {
-            "api_key": api_key,
-            "order_type": "ARCHIVE",
-            "order_params": order_request.model_dump(by_alias=True, mode="json"),
-            "estimated_cost_cents": estimated_cost_cents,
-            "aoi_area_sq_km": round(aoi_area_sq_km, 2),
-            "price_per_sq_km": price_per_sq_km_cents / 100.0,
-        }
+        api_key = get_api_key_from_ctx(ctx)
+        token_payload = {"api_key": api_key}
 
-        token = encrypt_confirmation_token(token_payload, settings.fernet_key)
+        try:
+            token = encrypt_confirmation_token(token_payload, settings.fernet_key)
+        except Exception as enc_exc:
+            log.error("archive_order_token_encrypt_failed", error=str(enc_exc))
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Failed to create confirmation token: {enc_exc}",
+            ).to_call_tool_result()
+
         api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
-        async with session_factory() as session:
-            record = await create_confirmation(
-                session, token, "ARCHIVE", api_key_hash, estimated_cost_cents
-            )
+        # Store order params in DB (non-sensitive; API key stays encrypted in token)
+        order_payload_json = json.dumps({
+            "order_params": order_request.model_dump(by_alias=True, mode="json"),
+            "webhook_url": webhook_url,
+        })
+
+        try:
+            async with session_factory() as session:
+                record = await create_confirmation(
+                    session, token, "ARCHIVE", api_key_hash, estimated_cost_cents,
+                    order_payload_json=order_payload_json,
+                )
+        except Exception as db_exc:
+            log.error("archive_order_db_write_failed", error=str(db_exc))
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=f"Failed to save confirmation record: {db_exc}",
+            ).to_call_tool_result()
 
         base = (settings.confirmation_base_url or f"http://localhost:{settings.server_port}").rstrip("/")
-        confirmation_url = f"{base}/confirm/{token}"
+        confirmation_url = f"{base}/confirm/{fernet_to_url_token(token)}"
 
         cost_str = f"${estimated_cost_cents / 100:.2f}"
         provider = getattr(archive, "provider", "unknown")
         resolution = getattr(archive, "resolution", "unknown")
 
+        webhook_note = (
+            f" Order status updates will be POSTed to: {webhook_url}"
+            if webhook_url else ""
+        )
         summary = (
             f"Archive order for {provider} / {resolution} scene. "
-            f"AOI: {aoi_area_sq_km:.1f} sq km. Estimated cost: {cost_str}. "
+            f"AOI: {aoi_area_sq_km:.1f} sq km. Estimated cost: {cost_str}."
+            f"{webhook_note} "
             "Share the confirmation URL with the user for review and approval. "
             "Open the confirmation link in your browser to review and approve the order."
         )
 
+        fernet_key_fingerprint = hashlib.sha256(settings.fernet_key).hexdigest()[:8]
         log.info(
             "archive_order_confirmation_created",
             confirmation_id=str(record.id),
             estimated_cost_cents=estimated_cost_cents,
+            fernet_key_fingerprint=fernet_key_fingerprint,
+            token_hash_prefix=compute_token_hash(token)[:16],
+            webhook_url=webhook_url,
         )
 
-        return {
+        response: dict[str, Any] = {
             "confirmation_url": confirmation_url,
             "confirmation_id": str(record.id),
             "estimated_cost_cents": estimated_cost_cents,
             "estimated_cost_dollars": cost_str,
             "order_summary": summary,
+            "skyfi_orders_url": "https://app.skyfi.com/orders",
             "IMPORTANT": (
                 "Please share this URL with the user and ask them to review and confirm the order."
             ),
         }
+        if webhook_url:
+            response["webhook_url_registered"] = webhook_url
+            response["webhook_note"] = (
+                "SkyFi will POST order status updates to this URL as the order progresses "
+                "(CREATED → PROCESSING_COMPLETE → DELIVERY_COMPLETED)."
+            )
+        return response
 
     @mcp.tool(
         annotations=ToolAnnotations(
@@ -679,8 +838,7 @@ def register(mcp: FastMCP) -> None:
             delivery_params: Delivery credentials dict for the chosen driver.
         """
         log.info("tool_request_redelivery", order_id=order_id, delivery_driver=delivery_driver)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         from purveyor.core.skyfi_types import (
             AzureDeliveryParams,
@@ -730,8 +888,9 @@ def register(mcp: FastMCP) -> None:
         return {
             "order_id": order_id,
             "redelivery_status": status,
+            "skyfi_order_url": build_skyfi_order_url(order_id),
             "summary": (
                 f"Redelivery requested for order {order_id} to {delivery_driver}. "
-                f"Status: {status}."
+                f"Status: {status}. View order: {build_skyfi_order_url(order_id)}"
             ),
         }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import secrets
 import time
@@ -19,7 +20,47 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
+from purveyor.core.webhook_store import order_webhook_events
+
 log = structlog.get_logger(__name__)
+
+
+async def _rehydrate_webhook_store(session_factory: Any) -> None:
+    """Populate the in-memory webhook deque from persisted DB rows on startup.
+
+    Loads up to 100 most-recent ``demo_order_webhook`` rows ordered newest-first
+    so the deque matches the live ordering.  Runs once during lifespan startup.
+    """
+    import json as _json
+
+    from sqlalchemy import select
+
+    from purveyor.models.tables import WebhookEvent
+
+    try:
+        async with session_factory() as session:
+            stmt = (
+                select(WebhookEvent)
+                .where(WebhookEvent.event_type == "demo_order_webhook")
+                .order_by(WebhookEvent.created_at.desc())
+                .limit(100)
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+
+        # Rows are newest-first; appendleft would reverse them.
+        # Insert oldest-first via append so the deque ends up newest-at-index-0.
+        for row in reversed(rows):
+            try:
+                event = _json.loads(row.payload)
+            except Exception as exc:
+                log.warning("webhook_store_rehydration_bad_row", error=str(exc))
+                continue
+            order_webhook_events.appendleft(event)
+
+        log.info("webhook_store_rehydrated", count=len(order_webhook_events))
+    except Exception as exc:
+        log.warning("webhook_store_rehydration_failed", error=str(exc))
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
@@ -77,7 +118,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """FastAPI lifespan: init DB, rate limiter, Sentry, and expose state."""
+    """FastAPI lifespan: init DB, rate limiter, Sentry, MCP session manager, and expose state."""
     log.info("fastapi_startup")
 
     # Access settings stored on app.state by create_app
@@ -109,6 +150,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.session_factory = session_factory
     # Flag: use SKIP LOCKED only for Postgres
     app.state.use_skip_locked = "postgresql" in settings.database_url
+
+    # Rehydrate the demo webhook store from DB so events survive container restarts
+    await _rehydrate_webhook_store(session_factory)
     # Shared secret for webhook endpoint authentication
     app.state.webhook_secret = secrets.token_urlsafe(32)
 
@@ -117,14 +161,31 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if hasattr(rate_limiter, "start_sweep"):
         rate_limiter.start_sweep()
 
-    # Signal that the server is fully ready
-    app.state.ready = True
-    log.info("fastapi_startup_complete")
+    # Run MCP StreamableHTTP session manager lifecycle.
+    # The session manager creates an anyio task group that handles concurrent
+    # MCP sessions. It must be started here because the mounted sub-app's own
+    # lifespan is not triggered by FastAPI — only the root app's lifespan runs.
+    mcp_session_manager = app.state.mcp_session_manager
+    async with mcp_session_manager.run():
+        # Start background order status poller — fires webhook events at each stage transition
+        from purveyor.core.order_poller import run_order_poller as _run_order_poller
 
-    yield
+        _poller_task = asyncio.create_task(_run_order_poller(session_factory))
 
-    # Cleanup
-    app.state.ready = False
+        # Signal that the server is fully ready
+        app.state.ready = True
+        log.info("fastapi_startup_complete")
+
+        yield
+
+        # Cleanup
+        app.state.ready = False
+        _poller_task.cancel()
+        try:
+            await _poller_task
+        except asyncio.CancelledError:
+            pass
+
     await rate_limiter.close()
     await engine.dispose()
     log.info("fastapi_shutdown")
@@ -179,7 +240,15 @@ def create_app(settings: Any | None = None) -> FastAPI:
         description="Remote MCP server wrapping the SkyFi Platform API",
         version="1.0.0",
         lifespan=_lifespan,
+        redirect_slashes=False,
     )
+
+    # Initialize MCP session manager eagerly so _lifespan can call .run() on it.
+    # streamable_http_app() lazily creates the session manager on first call.
+    from purveyor.server import mcp as mcp_server
+
+    mcp_sub_app = mcp_server.streamable_http_app()
+    app.state.mcp_session_manager = mcp_server.session_manager
 
     # Store settings and rate limiter on app.state so _lifespan can access them
     app.state.settings = settings
@@ -199,11 +268,6 @@ def create_app(settings: Any | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    # Mount MCP server at /mcp
-    from purveyor.server import mcp
-
-    app.mount("/mcp", mcp.streamable_http_app())
 
     # Webhook routes (real implementation — Task 3.3)
     from purveyor.webhooks.receiver import router as webhook_router
@@ -289,25 +353,56 @@ def create_app(settings: Any | None = None) -> FastAPI:
 
     @app.get("/confirm/{token}", response_class=HTMLResponse)
     async def get_confirmation_page(request: Request, token: str) -> HTMLResponse:
-        """Render the order confirmation page for a given Fernet token.
+        """Render the order confirmation page for a given base32-encoded token.
 
-        Decrypts the token to extract order details, then looks up the
-        confirmation record in the DB to determine the current state.
+        The URL token is base32-encoded (A-Z2-7) to survive LLM URL normalization
+        and Markdown rendering without corruption.  Decodes to the original Fernet
+        token before DB lookup and decryption.
         """
         from purveyor.core.confirmation import (
+            compute_token_hash,
             decrypt_confirmation_token,
             get_confirmation_by_token,
+            url_token_to_fernet,
         )
         from purveyor.core.errors import ToolError
 
         cur_settings: Any = request.app.state.settings
         session_factory = request.app.state.session_factory
 
+        # Decode base32 URL token → original Fernet token
+        try:
+            token = url_token_to_fernet(token)
+        except Exception:
+            log.warning("confirm_page_invalid_url_token")
+            return templates.TemplateResponse(
+                request,
+                "confirm.html",
+                {"state": "expired", "error_message": "This order link is invalid or has expired."},
+                status_code=410,
+            )
+
+        import hashlib
+
+        token_hash = compute_token_hash(token)
+        fernet_key_fingerprint = hashlib.sha256(cur_settings.fernet_key).hexdigest()[:8]
+        log.info(
+            "confirm_page_lookup",
+            token_len=len(token),
+            token_prefix=token[:12],
+            token_hash_prefix=token_hash[:16],
+            fernet_key_fingerprint=fernet_key_fingerprint,
+        )
+
         async with session_factory() as session:
             record = await get_confirmation_by_token(session, token)
 
         # Token not in DB at all
         if record is None:
+            log.warning(
+                "confirm_page_record_not_found",
+                token_hash_prefix=token_hash[:16],
+            )
             return templates.TemplateResponse(
                 request,
                 "confirm.html",
@@ -348,28 +443,46 @@ def create_app(settings: Any | None = None) -> FastAPI:
                 status_code=410,
             )
 
-        # Status is "pending" — decrypt token to render order details
-        try:
-            payload = decrypt_confirmation_token(token, cur_settings.fernet_key)
-        except ToolError:
-            # Token is cryptographically expired or invalid
-            async with session_factory() as session:
-                rec = await get_confirmation_by_token(session, token)
-                if rec is not None and rec.status == "pending":
-                    rec.status = "expired"
-                    await session.commit()
-            return templates.TemplateResponse(
-                request,
-                "confirm.html",
-                {"state": "expired"},
-                status_code=410,
-            )
+        # Status is "pending" — load order details for rendering.
+        # New tokens store order params in DB (order_payload_json) to keep the URL
+        # token short.  Old tokens (pre-migration b1c2d3e4f5a6) carry a full payload
+        # in the Fernet token and need decryption for rendering.
+        import json as _json
 
-        order_type: str = payload.get("order_type", record.order_type)
-        order_params: dict[str, Any] = payload.get("order_params", {})
-        estimated_cost_cents: int = payload.get(
-            "estimated_cost_cents", record.estimated_cost_cents or 0
-        )
+        order_params: dict[str, Any] = {}
+        webhook_url: str | None = None
+
+        if record.order_payload_json:
+            # New path: order params in DB — no decryption needed for display
+            stored = _json.loads(record.order_payload_json)
+            order_params = stored.get("order_params", {})
+            webhook_url = stored.get("webhook_url")
+        else:
+            # Old path: full payload in Fernet token — decrypt to render
+            try:
+                payload = decrypt_confirmation_token(token, cur_settings.fernet_key)
+            except ToolError:
+                log.warning(
+                    "confirm_page_decrypt_failed",
+                    token_hash_prefix=token_hash[:16],
+                    record_status=record.status if record else None,
+                )
+                async with session_factory() as session:
+                    rec = await get_confirmation_by_token(session, token)
+                    if rec is not None and rec.status == "pending":
+                        rec.status = "expired"
+                        await session.commit()
+                return templates.TemplateResponse(
+                    request,
+                    "confirm.html",
+                    {"state": "expired"},
+                    status_code=410,
+                )
+            order_params = payload.get("order_params", {})
+            webhook_url = payload.get("webhook_url")
+
+        order_type: str = record.order_type
+        estimated_cost_cents: int = record.estimated_cost_cents or 0
 
         estimated_cost_dollars = f"${estimated_cost_cents / 100:,.2f}"
 
@@ -396,6 +509,7 @@ def create_app(settings: Any | None = None) -> FastAPI:
                 "estimated_cost_dollars": estimated_cost_dollars,
                 "cost_breakdown": cost_breakdown,
                 "expires_at_utc": f"This link expires at {expires_at_str}",
+                "webhook_url": webhook_url,
                 "skyfi_order_id": None,
                 "error_message": None,
             },
@@ -410,13 +524,31 @@ def create_app(settings: Any | None = None) -> FastAPI:
         """Handle confirm or cancel POST from the confirmation page form.
 
         The form sends `action=confirm` or `action=cancel`.
+        The URL token is base32-encoded; decoded to Fernet token before use.
         """
-        from purveyor.core.confirmation import cancel_confirmation, confirm_order
+        from purveyor.core.confirmation import (
+            cancel_confirmation,
+            confirm_order,
+            decrypt_confirmation_token,
+            url_token_to_fernet,
+        )
         from purveyor.core.errors import ErrorCode, ToolError
 
         cur_settings: Any = request.app.state.settings
         session_factory = request.app.state.session_factory
         use_skip_locked: bool = request.app.state.use_skip_locked
+
+        # Decode base32 URL token → original Fernet token
+        try:
+            token = url_token_to_fernet(token)
+        except Exception:
+            log.warning("confirm_post_invalid_url_token")
+            return templates.TemplateResponse(
+                request,
+                "confirm.html",
+                {"state": "expired"},
+                status_code=410,
+            )
 
         if action == "cancel":
             from purveyor.core.confirmation import get_confirmation_by_token
@@ -503,6 +635,54 @@ def create_app(settings: Any | None = None) -> FastAPI:
                     status_code=502,
                 )
 
+        # Fire the initial order-placed webhook event and register the order for
+        # ongoing status polling so all 5 stages are delivered:
+        # CREATED → STARTED → PROCESSING_PENDING → PROCESSING_COMPLETE → DELIVERY_COMPLETED
+        import json as _json_confirm
+
+        from purveyor.core.order_poller import (
+            fire_and_store_webhook as _fire_webhook,
+        )
+        from purveyor.core.order_poller import (
+            register_order_for_polling as _reg_polling,
+        )
+
+        _webhook_url: str | None = None
+        if record.order_payload_json:
+            _stored = _json_confirm.loads(record.order_payload_json)
+            _webhook_url = _stored.get("webhook_url")
+
+        if _webhook_url:
+            try:
+                _tok_payload = decrypt_confirmation_token(token, cur_settings.fernet_key)
+                _api_key: str = _tok_payload["api_key"]
+                _order_id = str(order_response.id)
+                _initial_status = str(getattr(order_response, "status", "CREATED"))
+                _order_info_dict: dict[str, Any] = order_response.model_dump(
+                    by_alias=True, mode="json"
+                )
+                _fire_task = asyncio.create_task(
+                    _fire_webhook(
+                        webhook_url=_webhook_url,
+                        order_id=_order_id,
+                        order_info_dict=_order_info_dict,
+                        event_status=_initial_status,
+                        session_factory=session_factory,
+                    )
+                )
+                _reg_task = asyncio.create_task(
+                    _reg_polling(
+                        order_id=_order_id,
+                        api_key=_api_key,
+                        webhook_url=_webhook_url,
+                        initial_status=_initial_status,
+                    )
+                )
+                # Background tasks — suppress unused-variable warning
+                del _fire_task, _reg_task
+            except Exception as _wh_exc:
+                log.warning("order_poller_post_confirm_failed", error=str(_wh_exc))
+
         return templates.TemplateResponse(
             request,
             "confirm.html",
@@ -511,6 +691,355 @@ def create_app(settings: Any | None = None) -> FastAPI:
                 "skyfi_order_id": str(order_response.id),
             },
         )
+
+    # ------------------------------------------------------------------
+    # Demo webhook receiver routes
+    # ------------------------------------------------------------------
+
+    @app.post("/webhooks/orders")
+    async def receive_order_webhook(request: Request) -> JSONResponse:
+        """Receive order status webhooks from SkyFi for demo/testing purposes.
+
+        Stores events in the in-memory deque AND persists to the webhook_events
+        table so they survive container restarts.
+        Returns 200 immediately — SkyFi has a 2-second webhook timeout.
+        """
+        import json as _json
+
+        from purveyor.models.tables import WebhookEvent
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        # Log every incoming webhook immediately — before any storage that could fail.
+        # Uses camelCase field names matching SkyFi's actual payload structure.
+        order_id = body.get("orderInfo", {}).get("id", "unknown") if isinstance(body, dict) else "unknown"
+        status = body.get("event", {}).get("status", "unknown") if isinstance(body, dict) else "unknown"
+        order_type = body.get("orderInfo", {}).get("orderType", "unknown") if isinstance(body, dict) else "unknown"
+        log.info(
+            "webhook_received",
+            order_id=order_id,
+            status=status,
+            order_type=order_type,
+            payload_keys=list(body.keys()) if isinstance(body, dict) else [],
+        )
+
+        event: dict[str, Any] = {
+            "received_at": datetime.datetime.now(datetime.UTC).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "payload": body,
+        }
+        order_webhook_events.appendleft(event)
+
+        log.info("webhook_stored", total_events=len(order_webhook_events))
+
+        # Persist to DB — wrapped in try/except so the POST always returns 200
+        session_factory = getattr(request.app.state, "session_factory", None)
+        if session_factory is not None:
+            try:
+                async with session_factory() as session:
+                    db_row = WebhookEvent(
+                        event_type="demo_order_webhook",
+                        payload=_json.dumps(event),
+                        api_key_hash=None,
+                        delivered=True,
+                    )
+                    session.add(db_row)
+                    await session.commit()
+            except Exception as exc:
+                log.warning("demo_webhook_persist_failed", error=str(exc))
+
+        return JSONResponse(content={"status": "ok"})
+
+    @app.get("/webhooks/orders")
+    async def list_order_webhooks(limit: int = 20) -> JSONResponse:
+        """List recently received order webhook events (demo endpoint).
+
+        Args:
+            limit: Maximum number of events to return (1-100).
+        """
+        limit = max(1, min(limit, 100))
+        events = list(order_webhook_events)[:limit]
+        return JSONResponse(
+            content={
+                "total_stored": len(order_webhook_events),
+                "showing": len(events),
+                "events": events,
+            }
+        )
+
+    @app.get("/webhooks/orders/ui", response_class=HTMLResponse)
+    async def webhook_events_ui() -> HTMLResponse:
+        """Live-polling HTML viewer for demo order webhook events."""
+        purveyor_url = ""
+        # Try to get the configured base URL for display
+        try:
+            settings_obj: Any = app.state.settings
+            purveyor_url = (
+                settings_obj.confirmation_base_url
+                or "http://localhost:8000"
+            ).rstrip("/")
+        except AttributeError:
+            purveyor_url = "http://localhost:8000"
+
+        webhook_url_display = f"{purveyor_url}/webhooks/orders"
+
+        return HTMLResponse(
+            content=f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Purveyor — Order Webhook Events</title>
+    <style>
+        * {{ box-sizing: border-box; }}
+        body {{
+            font-family: system-ui, sans-serif; max-width: 900px;
+            margin: 40px auto; padding: 0 20px;
+            background: #0d1117; color: #c9d1d9;
+        }}
+        h1 {{ color: #58a6ff; margin-bottom: 4px; }}
+        .header-row {{
+            display: flex; align-items: center; gap: 12px;
+            flex-wrap: wrap; margin-bottom: 4px;
+        }}
+        .status-dot {{
+            width: 10px; height: 10px; border-radius: 50%;
+            background: #3fb950; flex-shrink: 0;
+            box-shadow: 0 0 6px #3fb95088;
+            transition: background 0.3s;
+        }}
+        .status-dot.disconnected {{ background: #f85149; box-shadow: 0 0 6px #f8514988; }}
+        .meta {{ color: #8b949e; font-size: 13px; margin: 0 0 4px; }}
+        .event-count {{ color: #58a6ff; font-weight: bold; }}
+        .sound-toggle {{
+            background: #21262d; border: 1px solid #30363d; color: #c9d1d9;
+            border-radius: 6px; padding: 3px 10px; font-size: 12px;
+            cursor: pointer; user-select: none;
+        }}
+        .sound-toggle:hover {{ background: #30363d; }}
+        .event {{
+            background: #161b22; border: 1px solid #30363d;
+            border-radius: 8px; padding: 16px; margin: 12px 0;
+        }}
+        @keyframes slideIn {{
+            from {{ opacity: 0; transform: translateY(-16px); }}
+            to   {{ opacity: 1; transform: translateY(0); }}
+        }}
+        .event-new {{ animation: slideIn 0.35s ease-out; }}
+        .event-header {{ display: flex; justify-content: space-between; margin-bottom: 8px; }}
+        .status {{ font-weight: bold; padding: 2px 8px; border-radius: 4px; }}
+        .status-CREATED {{ background: #1f6feb33; color: #58a6ff; }}
+        .status-STARTED {{ background: #d2992233; color: #d29922; }}
+        .status-PROVIDER_PENDING {{ background: #d2992233; color: #d29922; }}
+        .status-PROCESSING_PENDING {{ background: #1f6feb33; color: #58a6ff; }}
+        .status-PROCESSING_COMPLETE {{ background: #23883333; color: #3fb950; }}
+        .status-DELIVERY_COMPLETED {{ background: #23883333; color: #3fb950; }}
+        .status-FAILED {{ background: #f8514933; color: #f85149; }}
+        pre {{
+            background: #0d1117; padding: 12px;
+            border-radius: 4px; overflow-x: auto; font-size: 13px;
+        }}
+        .timestamp {{ color: #8b949e; font-size: 13px; }}
+        .empty {{ text-align: center; padding: 60px; color: #8b949e; }}
+        .order-link {{ color: #58a6ff; text-decoration: none; }}
+        .order-link:hover {{ text-decoration: underline; }}
+        code {{ background: #161b22; padding: 2px 6px; border-radius: 4px; font-size: 13px; }}
+        #new-events-toast {{
+            display: none; position: fixed; top: 16px; left: 50%;
+            transform: translateX(-50%);
+            background: #1f6feb; color: #fff;
+            padding: 8px 20px; border-radius: 20px;
+            font-size: 14px; font-weight: bold;
+            cursor: pointer; z-index: 100;
+            box-shadow: 0 4px 12px #0006;
+            transition: opacity 0.2s;
+        }}
+        #new-events-toast:hover {{ background: #388bfd; }}
+    </style>
+</head>
+<body>
+    <h1>&#x1F6F0;&#xFE0F; Order Webhook Events</h1>
+    <div class="header-row">
+        <span class="status-dot" id="dot"></span>
+        <span class="meta" id="updated">Connecting&hellip;</span>
+        <span class="meta">&bull; <span class="event-count" id="count">0</span> events</span>
+        <button class="sound-toggle" id="sound-btn" title="Toggle notification sound">&#x1F515; Sound off</button>
+    </div>
+    <p class="meta">Webhook URL: <code>{webhook_url_display}</code></p>
+    <div id="events"></div>
+    <div id="new-events-toast">New events &#x2191;</div>
+
+    <script>
+        // ── state ──────────────────────────────────────────────────────────
+        let lastCount = 0;
+        let lastTimestamp = null;
+        let secondsSince = 0;
+        let soundOn = false;
+        let audioCtx = null;
+
+        // ── sound ──────────────────────────────────────────────────────────
+        document.getElementById('sound-btn').addEventListener('click', () => {{
+            soundOn = !soundOn;
+            document.getElementById('sound-btn').textContent =
+                soundOn ? '\\uD83D\\uDD14 Sound on' : '\\uD83D\\uDD15 Sound off';
+        }});
+
+        function playPing() {{
+            if (!soundOn) return;
+            try {{
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.15);
+                gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+                osc.start(audioCtx.currentTime);
+                osc.stop(audioCtx.currentTime + 0.25);
+            }} catch (e) {{}}
+        }}
+
+        // ── toast ──────────────────────────────────────────────────────────
+        const toast = document.getElementById('new-events-toast');
+        toast.addEventListener('click', () => {{
+            window.scrollTo({{ top: 0, behavior: 'smooth' }});
+            toast.style.display = 'none';
+        }});
+
+        function isScrolledDown() {{
+            return window.scrollY > 120;
+        }}
+
+        // ── event rendering ────────────────────────────────────────────────
+        function buildEventEl(e, isNew) {{
+            const p = e.payload || {{}};
+            const status = (p.event && p.event.status) ? p.event.status : 'UNKNOWN';
+            const orderInfo = p.order_info || p.orderInfo || {{}};
+            const orderId = orderInfo.id || orderInfo.order_id || 'unknown';
+            const orderType = orderInfo.order_type || orderInfo.orderType || '';
+            const message = (p.event && p.event.message) ? p.event.message : '';
+            const orderUrl = 'https://app.skyfi.com/orders/' + orderId;
+
+            const div = document.createElement('div');
+            div.className = 'event' + (isNew ? ' event-new' : '');
+            div.dataset.ts = e.received_at || '';
+            div.innerHTML =
+                '<div class="event-header">'
+                + '<span class="status status-' + status + '">' + status + '</span>'
+                + '<span class="timestamp">' + (e.received_at || '') + '</span>'
+                + '</div>'
+                + '<div>Order: <a href="' + orderUrl + '" target="_blank" class="order-link">' + orderId + '</a>'
+                + (orderType ? ' (' + orderType + ')' : '') + '</div>'
+                + (message ? '<div>' + message + '</div>' : '')
+                + '<details><summary>Full payload</summary><pre>'
+                + JSON.stringify(p, null, 2).replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                + '</pre></details>';
+            return div;
+        }}
+
+        function updateEventList(events, newCount) {{
+            const container = document.getElementById('events');
+
+            if (events.length === 0) {{
+                container.innerHTML = '<div class="empty">No webhook events yet.<br>Place an order with webhook_url pointed here to see events.</div>';
+                return;
+            }}
+
+            // Determine which events are new by comparing timestamps already in DOM
+            const existing = new Set();
+            container.querySelectorAll('.event[data-ts]').forEach(el => existing.add(el.dataset.ts));
+
+            // Prepend new events (events are newest-first from the API)
+            let addedCount = 0;
+            for (let i = newCount - 1; i >= 0; i--) {{
+                const e = events[i];
+                const ts = e.received_at || '';
+                if (!existing.has(ts)) {{
+                    const el = buildEventEl(e, true);
+                    container.insertBefore(el, container.firstChild);
+                    addedCount++;
+                }}
+            }}
+
+            // Remove the empty placeholder if present
+            const empty = container.querySelector('.empty');
+            if (empty) empty.remove();
+
+            if (addedCount > 0) {{
+                playPing();
+                if (isScrolledDown()) {{
+                    toast.style.display = 'block';
+                }}
+            }}
+        }}
+
+        // ── status / counter ───────────────────────────────────────────────
+        const dot = document.getElementById('dot');
+        const updatedEl = document.getElementById('updated');
+        const countEl = document.getElementById('count');
+
+        function setConnected(ok) {{
+            dot.className = 'status-dot' + (ok ? '' : ' disconnected');
+        }}
+
+        function tick() {{
+            secondsSince++;
+            updatedEl.textContent = secondsSince === 0
+                ? 'Just updated'
+                : 'Last updated ' + secondsSince + 's ago';
+        }}
+        setInterval(tick, 1000);
+
+        // ── poll ───────────────────────────────────────────────────────────
+        async function poll() {{
+            try {{
+                const resp = await fetch('/webhooks/orders?limit=50');
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const data = await resp.json();
+                setConnected(true);
+                countEl.textContent = data.total_stored;
+
+                const newCount = data.total_stored - lastCount;
+                if (data.total_stored !== lastCount) {{
+                    updateEventList(data.events, newCount > 0 ? newCount : data.events.length);
+                    lastCount = data.total_stored;
+                    secondsSince = 0;
+                    updatedEl.textContent = 'Just updated';
+                }} else if (lastCount === 0) {{
+                    // Ensure empty state renders on first load
+                    updateEventList([], 0);
+                    secondsSince = 0;
+                    updatedEl.textContent = 'Just updated';
+                }}
+            }} catch (e) {{
+                setConnected(false);
+                updatedEl.textContent = 'Connection error — retrying\u2026';
+            }}
+            setTimeout(poll, 3000);
+        }}
+
+        // Hide toast when user scrolls back to top
+        window.addEventListener('scroll', () => {{
+            if (!isScrolledDown()) toast.style.display = 'none';
+        }});
+
+        poll();
+    </script>
+</body>
+</html>"""
+        )
+
+    # Mount MCP server at root so the sub-app receives the full /mcp path.
+    # streamable_http_app() creates a Starlette app with an internal route at
+    # /mcp — mounting at /mcp would strip that prefix, causing 404. Mounting at
+    # / (after all other routes) lets specific routes match first, then falls
+    # through to the MCP app for /mcp requests.
+    app.mount("/", mcp_sub_app)
 
     return app
 

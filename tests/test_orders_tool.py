@@ -149,12 +149,15 @@ async def test_get_order_status_returns_order() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_order_status_completed_includes_urls() -> None:
-    """Completed order includes download URLs dict (even if empty)."""
+async def test_get_order_status_completed_includes_api_endpoints() -> None:
+    """Completed order includes api_download_endpoints (renamed from download_urls).
+
+    api_download_endpoints contains Platform API paths that require auth headers;
+    agents should use download_deliverable to get a signed URL instead.
+    """
     order = _make_tasking_order("DELIVERY_COMPLETED")
-    # Add download URLs
-    order.download_image_url = "https://example.com/image.tif"
-    order.download_payload_url = "https://example.com/payload.zip"
+    order.download_image_url = "https://app.skyfi.com/platform-api/orders/abc/image"
+    order.download_payload_url = "https://app.skyfi.com/platform-api/orders/abc/payload"
 
     cached_client = MagicMock()
     cached_client.get_order = AsyncMock(return_value=order)
@@ -162,8 +165,54 @@ async def test_get_order_status_completed_includes_urls() -> None:
     tool_fn = mcp._tool_manager.get_tool("get_order_status").fn
     result = await tool_fn(order_id=ORDER_ID, ctx=_make_ctx(cached_client))
 
-    assert "download_urls" in result
-    assert result["download_urls"].get("image") is not None
+    # Renamed field — no longer "download_urls"
+    assert "download_urls" not in result, "download_urls was renamed to api_download_endpoints"
+    assert "api_download_endpoints" in result
+    assert result["api_download_endpoints"].get("image") is not None
+
+
+@pytest.mark.asyncio
+async def test_list_orders_includes_skyfi_order_url() -> None:
+    """list_orders includes skyfi_order_url inside each order dict for web browser viewing.
+
+    skyfi_order_url (https://app.skyfi.com/orders/{id}) is the correct browser link.
+    download_image_url is an authenticated API endpoint and must NOT be given to users
+    as a clickable link — doing so produces 'Missing api key' in the browser.
+    """
+    order = _make_tasking_order()
+    cached_client = MagicMock()
+    cached_client.list_orders = AsyncMock(
+        return_value=ListOrdersResponse(total=1, orders=[order])
+    )
+
+    tool_fn = mcp._tool_manager.get_tool("list_orders").fn
+    result = await tool_fn(ctx=_make_ctx(cached_client))
+
+    assert isinstance(result, dict)
+    order_data = result["orders"][0]
+    assert "skyfi_order_url" in order_data, "skyfi_order_url must be inside each order dict"
+    assert "app.skyfi.com/orders/" in order_data["skyfi_order_url"]
+    assert str(ORDER_ID) in order_data["skyfi_order_url"]
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_includes_skyfi_order_url() -> None:
+    """get_order_status includes skyfi_order_url at top level and inside order dict."""
+    order = _make_tasking_order("CREATED")
+    cached_client = MagicMock()
+    cached_client.get_order = AsyncMock(return_value=order)
+
+    tool_fn = mcp._tool_manager.get_tool("get_order_status").fn
+    result = await tool_fn(order_id=ORDER_ID, ctx=_make_ctx(cached_client))
+
+    assert isinstance(result, dict)
+    assert "skyfi_order_url" in result
+    assert "app.skyfi.com/orders/" in result["skyfi_order_url"]
+    assert ORDER_ID in result["skyfi_order_url"]
+    # Also present inside order dict for consistency
+    assert "skyfi_order_url" in result["order"]
+    # summary references the web URL
+    assert "app.skyfi.com/orders/" in result["summary"]
 
 
 @pytest.mark.asyncio

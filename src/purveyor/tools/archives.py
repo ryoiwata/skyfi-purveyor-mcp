@@ -10,6 +10,25 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from purveyor.core.errors import ErrorCode, ToolError
+from purveyor.tools._helpers import get_skyfi_client
+from purveyor.tools.geospatial import _calculate_area_sq_km
+from purveyor.tools.preview import build_skyfi_preview_url
+
+
+def _best_thumbnail_url(thumbnail_urls: dict[str, str] | None) -> str | None:
+    """Return the URL for the largest available thumbnail, or None if unavailable."""
+    if not thumbnail_urls:
+        return None
+
+    def _area(key: str) -> int:
+        try:
+            w, h = key.lower().split("x")
+            return int(w) * int(h)
+        except (ValueError, AttributeError):
+            return 0
+
+    best_key = max(thumbnail_urls.keys(), key=_area)
+    return thumbnail_urls[best_key]
 
 McpContext = Context[Any, Any, Any]
 
@@ -60,7 +79,7 @@ def register(mcp: FastMCP) -> None:
         """
         log.info("tool_search_archives", location=location[:50])
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
         settings = lc["settings"]
         cache = lc["cache"]
 
@@ -157,6 +176,20 @@ def register(mcp: FastMCP) -> None:
             ),
             ).to_call_tool_result()
 
+        # Calculate AOI area (best-effort — wkt is always set at this point)
+        import asyncio as _asyncio
+
+        aoi_area_km2: float | None = None
+        try:
+            from shapely import wkt as _shapely_wkt
+
+            _polygon = await _asyncio.to_thread(_shapely_wkt.loads, wkt)
+            aoi_area_km2 = round(
+                await _asyncio.to_thread(_calculate_area_sq_km, _polygon), 2
+            )
+        except Exception as _area_exc:
+            log.debug("search_archives_area_calc_failed", error=str(_area_exc))
+
         # Build summary (Design Decision §14: dense, factual, agent-facing)
         total = response.total or len(archives)
         prices = [a.price_full_scene for a in archives if a.price_full_scene > 0]
@@ -186,13 +219,20 @@ def register(mcp: FastMCP) -> None:
 
         def _archive_with_url(a: Any) -> dict[str, Any]:
             d: dict[str, Any] = a.model_dump(mode="json")
-            d["skyfi_url"] = f"https://app.skyfi.com/explore/archive/{a.archive_id}"
+            # preview_url: interactive crop viewer with AOI overlaid (client-side URL).
+            # /explore/archive/{id} is excluded — fails for Sentinel and some other providers.
+            d["preview_url"] = build_skyfi_preview_url(a.archive_id, wkt)
+            # thumbnail_url: SkyFi-provided image thumbnail (always works when present).
+            thumb = _best_thumbnail_url(a.thumbnail_urls)
+            if thumb:
+                d["thumbnail_url"] = thumb
             return d
 
         result: dict[str, Any] = {
             "archives": [_archive_with_url(a) for a in archives],
             "total": total,
             "next_page": response.next_page,
+            "aoi_area_km2": aoi_area_km2,
             "summary": " ".join(summary_parts),
         }
         if location_note:
@@ -216,8 +256,7 @@ def register(mcp: FastMCP) -> None:
             archive_id: The archive UUID from a previous search_archives call.
         """
         log.info("tool_get_archive_details", archive_id=archive_id)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         try:
             archive = await cached_client.get_archive(archive_id)
@@ -228,15 +267,31 @@ def register(mcp: FastMCP) -> None:
                 message=f"Failed to fetch archive {archive_id}: {exc}",
             ).to_call_tool_result()
 
-        skyfi_url = f"https://app.skyfi.com/explore/archive/{archive_id}"
+        # Build archive dict and annotate with preview fields before returning.
+        archive_dict: dict[str, Any] = archive.model_dump(mode="json")
+
+        # preview_url: interactive crop viewer built from the archive's own footprint.
+        # /explore/archive/{id} is NOT used — it fails for Sentinel and some providers.
+        preview_url = build_skyfi_preview_url(archive_id, archive.footprint)
+        archive_dict["preview_url"] = preview_url
+
+        # thumbnail_url: SkyFi-provided image thumbnail (API-sourced, always works when set).
+        thumb = _best_thumbnail_url(archive.thumbnail_urls)
+        if thumb:
+            archive_dict["thumbnail_url"] = thumb
+
+        summary = (
+            f"Archive {archive_id}: {archive.provider} {archive.resolution} "
+            f"captured {archive.capture_timestamp.date()}. "
+            f"Cloud cover: {archive.cloud_coverage_percent or 'N/A'}%. "
+            f"Price: ${archive.price_full_scene:.0f}/scene. "
+            f"AOI limits: {archive.min_sq_km}-{archive.max_sq_km} km². "
+        )
+        if thumb:
+            summary += f"Image thumbnail: {thumb}. "
+        summary += f"Explore viewer: {preview_url}"
+
         return {
-            "archive": archive.model_dump(mode="json"),
-            "skyfi_url": skyfi_url,
-            "summary": (
-                f"Archive {archive_id}: {archive.provider} {archive.resolution} "
-                f"captured {archive.capture_timestamp.date()}. "
-                f"Cloud cover: {archive.cloud_coverage_percent or 'N/A'}%. "
-                f"Price: ${archive.price_full_scene:.0f}/scene. "
-                f"View on SkyFi: {skyfi_url}"
-            ),
+            "archive": archive_dict,
+            "summary": summary,
         }

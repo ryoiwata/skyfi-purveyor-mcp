@@ -10,12 +10,14 @@ Per DESIGN_DECISIONS.md sections 1-6:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 import structlog
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Request
@@ -23,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from purveyor.core.config import Settings
-from purveyor.core.errors import ErrorCode, ToolError
+from purveyor.core.errors import ErrorCode, ToolError, skyfi_error_from_response
 from purveyor.core.skyfi_client import SkyFiClient
 from purveyor.core.skyfi_types import (
     ArchiveOrderRequest,
@@ -77,6 +79,52 @@ def decrypt_confirmation_token(
         ) from exc
 
 
+def fernet_to_url_token(fernet_token: str) -> str:
+    """Re-encode a Fernet token as base32 for safe embedding in URLs.
+
+    Fernet tokens are URL-safe base64 (A-Za-z0-9-_=).  The '_' character
+    causes two layers of corruption when passed through LLM-rendered Markdown:
+    1. LLMs normalize '%5F' back to '_' (RFC 3986 says unreserved chars must
+       not be percent-encoded, so they undo quote()).
+    2. Markdown renderers then strip '_..._' pairs as emphasis markers.
+
+    Base32 output (A-Z2-7, no underscores, no dashes, no equals) is immune to
+    both problems.  Gemini has no URL-normalization rule for alphanumeric-only
+    tokens, and Markdown has no special handling for A-Z2-7.
+
+    Args:
+        fernet_token: The Fernet token string (URL-safe base64 with padding).
+
+    Returns:
+        Base32-encoded string (uppercase A-Z2-7, no padding '=').
+    """
+    raw_bytes = base64.urlsafe_b64decode(fernet_token.encode())
+    return base64.b32encode(raw_bytes).decode().rstrip("=")
+
+
+def url_token_to_fernet(url_token: str) -> str:
+    """Decode a base32 URL token back to the original Fernet token string.
+
+    Inverse of fernet_to_url_token().  Case-insensitive (base32 is
+    case-insensitive by spec; uppercased before decoding).
+
+    Args:
+        url_token: Base32-encoded URL token from a /confirm/{token} path.
+
+    Returns:
+        The original Fernet token string (URL-safe base64 with padding).
+
+    Raises:
+        ValueError: If url_token is not valid base32.
+    """
+    padded = url_token.upper()
+    remainder = len(padded) % 8
+    if remainder:
+        padded += "=" * (8 - remainder)
+    raw_bytes = base64.b32decode(padded)
+    return base64.urlsafe_b64encode(raw_bytes).decode()
+
+
 def compute_token_hash(token: str) -> str:
     """Compute a SHA-256 hex digest of a token string.
 
@@ -95,6 +143,7 @@ async def create_confirmation(
     order_type: str,
     api_key_hash: str,
     estimated_cost_cents: int,
+    order_payload_json: str | None = None,
     mcp_session_id: str | None = None,
 ) -> OrderConfirmation:
     """Create and persist a new pending OrderConfirmation record.
@@ -105,6 +154,8 @@ async def create_confirmation(
         order_type: "TASKING" or "ARCHIVE".
         api_key_hash: SHA-256 hex digest of the user's API key.
         estimated_cost_cents: Estimated order cost in integer cents.
+        order_payload_json: JSON string with order_params and webhook_url.
+            Storing these in the DB keeps the URL token short (API key only).
         mcp_session_id: Optional MCP session ID for SSE routing.
 
     Returns:
@@ -121,6 +172,7 @@ async def create_confirmation(
         mcp_session_id=mcp_session_id,
         estimated_cost_cents=estimated_cost_cents,
         expires_at=expires_at,
+        order_payload_json=order_payload_json,
     )
     session.add(record)
     await session.commit()
@@ -221,17 +273,29 @@ async def confirm_order(
             message="This order confirmation has expired.",
         )
 
-    # --- Step 3: Decrypt token (validates TTL — raises ToolError if expired) ---
+    # --- Step 3: Decrypt token to get API key (validates TTL) ---
+    # Order params are loaded from DB (preferred) to avoid putting them in the token.
+    # For records created before migration b1c2d3e4f5a6, fall back to the token payload.
     payload = decrypt_confirmation_token(token, fernet_key)
 
     api_key: str = payload["api_key"]
-    order_type: str = payload.get("order_type", record.order_type)
-    order_params: dict[str, Any] = payload["order_params"]
+    order_type: str = record.order_type
+
+    webhook_url_for_log: str | None = None
+    if record.order_payload_json:
+        stored = json.loads(record.order_payload_json)
+        order_params: dict[str, Any] = stored["order_params"]
+        webhook_url_for_log = stored.get("webhook_url")
+    else:
+        # Backward compat: pre-migration tokens carry full payload
+        order_params = payload.get("order_params", {})
+        order_type = payload.get("order_type", record.order_type)
 
     log.info(
         "confirmation_placing_order",
         token_hash=token_hash[:16] + "...",
         order_type=order_type,
+        webhook_url=webhook_url_for_log,
     )
 
     # --- Step 4: Place order via SkyFi using the decrypted API key ---
@@ -246,6 +310,8 @@ async def confirm_order(
         else:
             request_archive = ArchiveOrderRequest.model_validate(order_params)
             order_response = await client.create_archive_order(request_archive)
+    except httpx.HTTPStatusError as exc:
+        raise skyfi_error_from_response(exc.response) from exc
     finally:
         if should_close_client:
             await client.close()
@@ -263,6 +329,7 @@ async def confirm_order(
         token_hash=token_hash[:16] + "...",
         skyfi_order_id=str(order_response.id),
         order_type=order_type,
+        webhook_url_in_response=getattr(order_response, "webhook_url", None),
     )
 
     return record, order_response

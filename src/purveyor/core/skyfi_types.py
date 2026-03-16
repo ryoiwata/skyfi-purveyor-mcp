@@ -30,6 +30,7 @@ class ApiProvider(StrEnum):
     NSL = "NSL"
     VEXCEL = "VEXCEL"
     ICEYE_US = "ICEYE_US"
+    VANTOR = "VANTOR"
 
 
 class ProductType(StrEnum):
@@ -525,8 +526,16 @@ class TaskingOrderRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     def model_dump_skyfi(self) -> dict[str, Any]:
-        """Serialize for SkyFi API."""
-        return self.model_dump(by_alias=True, exclude_none=True, mode="json")
+        """Serialize for SkyFi API.
+
+        Omits deliveryDriver/deliveryParams when driver is NONE — SkyFi's API
+        does not accept "NONE" as a driver value; the field must be absent.
+        """
+        data = self.model_dump(by_alias=True, exclude_none=True, mode="json")
+        if data.get("deliveryDriver") == "NONE":
+            data.pop("deliveryDriver", None)
+            data.pop("deliveryParams", None)
+        return data
 
 
 class ArchiveOrderRequest(BaseModel):
@@ -544,8 +553,16 @@ class ArchiveOrderRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     def model_dump_skyfi(self) -> dict[str, Any]:
-        """Serialize for SkyFi API."""
-        return self.model_dump(by_alias=True, exclude_none=True, mode="json")
+        """Serialize for SkyFi API.
+
+        Omits deliveryDriver/deliveryParams when driver is NONE — SkyFi's API
+        does not accept "NONE" as a driver value; the field must be absent.
+        """
+        data = self.model_dump(by_alias=True, exclude_none=True, mode="json")
+        if data.get("deliveryDriver") == "NONE":
+            data.pop("deliveryDriver", None)
+            data.pop("deliveryParams", None)
+        return data
 
 
 class TaskingOrderResponse(BaseModel):
@@ -586,6 +603,7 @@ class TaskingOrderResponse(BaseModel):
     geocode_location: str | None = Field(default=None, alias="geocodeLocation")
     deliverable_id: uuid.UUID | None = Field(default=None, alias="deliverableId")
     provider_window_id: uuid.UUID | None = Field(default=None, alias="providerWindowId")
+    webhook_url: str | None = Field(default=None, alias="webhookUrl")
 
 
 class ArchiveOrderResponse(BaseModel):
@@ -617,6 +635,7 @@ class ArchiveOrderResponse(BaseModel):
     cog_size: int | None = Field(default=None, alias="cogSize")
     geocode_location: str | None = Field(default=None, alias="geocodeLocation")
     deliverable_id: uuid.UUID | None = Field(default=None, alias="deliverableId")
+    webhook_url: str | None = Field(default=None, alias="webhookUrl")
 
 
 # Union type for order responses

@@ -59,6 +59,13 @@ class OrderConfirmation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
     )
+    order_payload_json: Mapped[str | None] = mapped_column(
+        Text(), nullable=True,
+        comment=(
+            "JSON blob with order_params and webhook_url; not security-sensitive. "
+            "NULL on records created before migration b1c2d3e4f5a6 (params in token)."
+        ),
+    )
 
 
 class WebhookEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):

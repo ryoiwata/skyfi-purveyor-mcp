@@ -11,6 +11,8 @@ from mcp.types import ToolAnnotations
 from sqlalchemy import select
 
 from purveyor.core.errors import ErrorCode, ToolError
+from purveyor.tools._helpers import get_skyfi_client
+from purveyor.tools.preview import build_skyfi_explore_url, build_skyfi_preview_url
 
 McpContext = Context[Any, Any, Any]
 
@@ -52,7 +54,7 @@ def register(mcp: FastMCP) -> None:
         """
         log.info("tool_setup_monitoring", location=location[:50])
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
         settings = lc["settings"]
         cache = lc["cache"]
 
@@ -177,8 +179,7 @@ def register(mcp: FastMCP) -> None:
             page_size: Results per page (1-100).
         """
         log.info("tool_list_notifications")
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         try:
             resp = await cached_client.list_notifications(
@@ -200,8 +201,15 @@ def register(mcp: FastMCP) -> None:
             if product_types:
                 summary += f" Product types monitored: {', '.join(product_types)}."
 
+        notification_dicts = []
+        for n in notifications:
+            d = n.model_dump(mode="json")
+            if n.aoi:
+                d["skyfi_explore_url"] = build_skyfi_explore_url(n.aoi)
+            notification_dicts.append(d)
+
         return {
-            "notifications": [n.model_dump(mode="json") for n in notifications],
+            "notifications": notification_dicts,
             "total": total,
             "page": page,
             "summary": summary,
@@ -224,8 +232,7 @@ def register(mcp: FastMCP) -> None:
             notification_id: The notification UUID.
         """
         log.info("tool_get_notification_history", notification_id=notification_id)
-        lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         try:
             notification = await cached_client.get_notification(notification_id)
@@ -241,8 +248,22 @@ def register(mcp: FastMCP) -> None:
             f"Monitoring AOI since {notification.created_at.date()}."
         )
 
+        aoi_wkt = notification.aoi
+        enriched_history = []
+        for event in notification.history:
+            e = dict(event)
+            archive_id = e.get("archiveId") or e.get("archive_id") or ""
+            if archive_id and aoi_wkt:
+                e["skyfi_preview_url"] = build_skyfi_preview_url(str(archive_id), aoi_wkt)
+            enriched_history.append(e)
+
+        notification_dict = notification.model_dump(mode="json")
+        notification_dict["history"] = enriched_history
+        if aoi_wkt:
+            notification_dict["skyfi_explore_url"] = build_skyfi_explore_url(aoi_wkt)
+
         return {
-            "notification": notification.model_dump(mode="json"),
+            "notification": notification_dict,
             "event_count": event_count,
             "summary": summary,
         }
@@ -267,7 +288,7 @@ def register(mcp: FastMCP) -> None:
         """
         log.info("tool_delete_notification", notification_id=notification_id)
         lc: dict[str, Any] = ctx.request_context.lifespan_context
-        cached_client = lc["cached_client"]
+        cached_client = get_skyfi_client(ctx)
 
         try:
             resp = await cached_client.delete_notification(notification_id)

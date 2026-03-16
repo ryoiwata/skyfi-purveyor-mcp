@@ -407,6 +407,48 @@ async def test_create_archive_order(client: SkyFiClient) -> None:
         assert result.order_cost == 25000
 
 
+def test_archive_order_request_none_driver_excluded() -> None:
+    """model_dump_skyfi omits deliveryDriver/deliveryParams when driver is NONE.
+
+    SkyFi's /order-archive endpoint rejects requests with deliveryDriver="NONE";
+    the field must be absent when no delivery is configured.
+    """
+    req = ArchiveOrderRequest(
+        aoi="POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
+        archive_id=str(uuid.uuid4()),
+    )
+    assert req.delivery_driver == DeliveryDriver.NONE
+    payload = req.model_dump_skyfi()
+    assert "deliveryDriver" not in payload
+    assert "deliveryParams" not in payload
+
+
+def test_tasking_order_request_none_driver_excluded() -> None:
+    """model_dump_skyfi omits deliveryDriver/deliveryParams when driver is NONE."""
+    req = TaskingOrderRequest(
+        aoi="POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
+        window_start=datetime(2024, 2, 1, tzinfo=UTC),
+        window_end=datetime(2024, 2, 28, tzinfo=UTC),
+        product_type=ProductType.DAY,
+        resolution="VERY HIGH",
+    )
+    assert req.delivery_driver == DeliveryDriver.NONE
+    payload = req.model_dump_skyfi()
+    assert "deliveryDriver" not in payload
+    assert "deliveryParams" not in payload
+
+
+def test_archive_order_request_s3_driver_included() -> None:
+    """model_dump_skyfi includes deliveryDriver when a real driver is set."""
+    req = ArchiveOrderRequest(
+        aoi="POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
+        archive_id=str(uuid.uuid4()),
+        delivery_driver=DeliveryDriver.S3,
+    )
+    payload = req.model_dump_skyfi()
+    assert payload["deliveryDriver"] == "S3"
+
+
 @pytest.mark.asyncio
 async def test_list_orders(client: SkyFiClient) -> None:
     """list_orders returns parsed ListOrdersResponse."""
