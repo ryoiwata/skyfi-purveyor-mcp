@@ -74,3 +74,6 @@ hashicorp-archive-keyring.gpg
 
 # ADK
 .adk/
+
+# Playwright MCP
+.playwright-mcp/
