@@ -14,6 +14,7 @@ import httpx
 import structlog
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
+from shapely import wkt as shapely_wkt
 
 from purveyor.core.errors import ErrorCode, ToolError
 
@@ -27,6 +28,10 @@ log = structlog.get_logger(__name__)
 OSM_USER_AGENT = "Purveyor-MCP/1.0 (https://github.com/ryoiwata/skyfi-purveyor-mcp)"
 OVERPASS_BASE = "https://overpass-api.de/api/interpreter"
 MAX_VERTICES = 500
+
+# Minimum useful area for a search AOI in sq km — filters degenerate convex hulls
+# from point-like or near-collinear geometries (e.g. a 3-point LineString)
+_MIN_AREA_SQ_KM = 0.01
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +61,16 @@ def _geojson_to_wkt(
     # Non-polygon types (LineString, Point, etc.) → convex hull
     if not hasattr(geom, "exterior"):
         geom = geom.convex_hull
+
+    # convex_hull of a degenerate/collinear geometry (e.g. 3 collinear points) can
+    # return a LineString or Point instead of a Polygon.  Those have no usable area,
+    # so raise immediately — the caller's try/except will skip this result and the
+    # area filter (_MIN_AREA_SQ_KM) provides a second guard in search_osm.
+    if not hasattr(geom, "exterior"):
+        raise ValueError(
+            f"Geometry reduced to non-polygon ({geom.geom_type}) after convex_hull — "
+            "likely collinear or degenerate input."
+        )
 
     note: str | None = None
     coords = list(geom.exterior.coords)
@@ -299,14 +314,22 @@ def register(mcp: FastMCP) -> None:
 
             try:
                 wkt, note = await asyncio.to_thread(_geojson_to_wkt, geojson)
+                geom = shapely_wkt.loads(wkt)
+                area_km2 = await asyncio.to_thread(_calculate_area_sq_km, geom)
             except Exception as exc:
                 log.warning("osm_geojson_parse_error", query=query, error=str(exc))
                 continue
 
-            from shapely import wkt as shapely_wkt
-
-            geom = shapely_wkt.loads(wkt)
-            area_km2 = await asyncio.to_thread(_calculate_area_sq_km, geom)
+            # Skip degenerate results (e.g. near-collinear LineString whose convex
+            # hull collapses to a point or sliver) — useless as a satellite AOI
+            if area_km2 < _MIN_AREA_SQ_KM:
+                log.debug(
+                    "osm_result_skipped_tiny_area",
+                    query=query,
+                    display_name=item.get("display_name"),
+                    area_km2=area_km2,
+                )
+                continue
 
             # Nominatim boundingbox order: [south, north, west, east]
             bbox_raw = item.get("boundingbox", [])
@@ -347,7 +370,7 @@ def register(mcp: FastMCP) -> None:
         area_summary = (
             f"{areas[0]:,.0f} km²"
             if len(areas) == 1
-            else f"{min(areas):,.0f}-{max(areas):,.0f} km2"
+            else f"{min(areas):,.0f}-{max(areas):,.0f} km²"
         )
 
         return {

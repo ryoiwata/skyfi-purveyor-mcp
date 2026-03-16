@@ -17,6 +17,7 @@ import structlog
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
+from purveyor.core.constants import SKYFI_MAX_AOI_VERTICES, SKYFI_MAX_SEARCH_AOI_KM2
 from purveyor.core.errors import ErrorCode, ToolError
 
 # Type alias to satisfy mypy strict [type-arg] on the 3-param generic Context
@@ -24,9 +25,9 @@ McpContext = Context[Any, Any, Any]
 
 log = structlog.get_logger(__name__)
 
-# SkyFi limits
-MAX_VERTICES = 500
-MAX_AREA_SQ_KM = 500_000.0
+# Local aliases for readability
+MAX_VERTICES = SKYFI_MAX_AOI_VERTICES
+MAX_AREA_SQ_KM = SKYFI_MAX_SEARCH_AOI_KM2
 
 # Global Nominatim rate-limit semaphore (1 req/sec per Design Decision §12)
 _nominatim_semaphore = asyncio.Semaphore(1)

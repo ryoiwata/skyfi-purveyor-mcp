@@ -89,17 +89,25 @@ def fernet_to_url_token(fernet_token: str) -> str:
     2. Markdown renderers then strip '_..._' pairs as emphasis markers.
 
     Base32 output (A-Z2-7, no underscores, no dashes, no equals) is immune to
-    both problems.  Gemini has no URL-normalization rule for alphanumeric-only
-    tokens, and Markdown has no special handling for A-Z2-7.
+    both problems.  However, standard base32 includes the letter O (which looks
+    like zero) and the letter I (which looks like one).  LLMs such as Gemini
+    confuse these when rendering URLs, causing base32 decode failures.
+
+    We substitute O→0 and I→1 in the output.  Neither 0 nor 1 appears in the
+    standard base32 alphabet (only digits 2-7 are used), so the substitution
+    is unambiguous and fully reversible by url_token_to_fernet.
 
     Args:
         fernet_token: The Fernet token string (URL-safe base64 with padding).
 
     Returns:
-        Base32-encoded string (uppercase A-Z2-7, no padding '=').
+        URL-safe token string (A-Z minus O/I, digits 0-7, no padding '=').
     """
     raw_bytes = base64.urlsafe_b64decode(fernet_token.encode())
-    return base64.b32encode(raw_bytes).decode().rstrip("=")
+    b32 = base64.b32encode(raw_bytes).decode().rstrip("=")
+    # Replace visually ambiguous characters so LLMs cannot corrupt them:
+    # O (letter) ↔ 0 (zero)   I (letter) ↔ 1 (one)
+    return b32.translate(str.maketrans("OI", "01"))
 
 
 def url_token_to_fernet(url_token: str) -> str:
@@ -107,6 +115,10 @@ def url_token_to_fernet(url_token: str) -> str:
 
     Inverse of fernet_to_url_token().  Case-insensitive (base32 is
     case-insensitive by spec; uppercased before decoding).
+
+    Normalises the O/I substitution introduced by fernet_to_url_token:
+    0 → O  and  1 → I.  This also recovers tokens that were corrupted by
+    LLMs before the fix was deployed (LLMs changed letter O to digit 0).
 
     Args:
         url_token: Base32-encoded URL token from a /confirm/{token} path.
@@ -118,6 +130,9 @@ def url_token_to_fernet(url_token: str) -> str:
         ValueError: If url_token is not valid base32.
     """
     padded = url_token.upper()
+    # Reverse the O→0 and I→1 substitution; also tolerates pre-fix tokens
+    # where an LLM may have corrupted O→0.
+    padded = padded.translate(str.maketrans("01", "OI"))
     remainder = len(padded) % 8
     if remainder:
         padded += "=" * (8 - remainder)

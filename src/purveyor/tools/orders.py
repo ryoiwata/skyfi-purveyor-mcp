@@ -12,6 +12,7 @@ import structlog
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
+from purveyor.core.constants import SKYFI_MAX_AOI_KM2, SKYFI_MIN_AOI_KM2
 from purveyor.core.errors import ErrorCode, ToolError
 from purveyor.tools._helpers import get_api_key_from_ctx, get_skyfi_client
 from purveyor.tools.preview import build_skyfi_order_url
@@ -19,11 +20,6 @@ from purveyor.tools.preview import build_skyfi_order_url
 McpContext = Context[Any, Any, Any]
 
 log = structlog.get_logger(__name__)
-
-# SkyFi order AOI size limits (sq km) — validated client-side before token creation
-# to avoid surfacing the error only after the user clicks the confirmation link.
-SKYFI_MIN_AOI_KM2 = 5.0
-SKYFI_MAX_AOI_KM2 = 10_000.0
 
 
 def register(mcp: FastMCP) -> None:
@@ -538,6 +534,7 @@ def register(mcp: FastMCP) -> None:
             "confirmation_id": str(record.id),
             "estimated_cost_cents": estimated_cost_cents,
             "estimated_cost_dollars": cost_str,
+            "aoi_area_km2": round(aoi_area_sq_km, 2),
             "order_summary": summary,
             "skyfi_orders_url": "https://app.skyfi.com/orders",
             "IMPORTANT": (
@@ -643,6 +640,25 @@ def register(mcp: FastMCP) -> None:
             aoi_area_sq_km = await asyncio.to_thread(_calculate_area_sq_km, polygon)
         except Exception as area_exc:
             log.warning("archive_area_calc_failed", error=str(area_exc))
+
+        # Global order limits — fail fast before per-archive check
+        if aoi_area_sq_km > SKYFI_MAX_AOI_KM2:
+            return ToolError(
+                code=ErrorCode.AOI_TOO_LARGE,
+                message=(
+                    f"AOI too large ({aoi_area_sq_km:.1f} km²). SkyFi maximum for orders is "
+                    f"{SKYFI_MAX_AOI_KM2:,.0f} km². Use create_aoi_from_point with a smaller "
+                    "radius — 25-100 km² is typical for most use cases."
+                ),
+            ).to_call_tool_result()
+        if 0 < aoi_area_sq_km < SKYFI_MIN_AOI_KM2:
+            return ToolError(
+                code=ErrorCode.INVALID_INPUT,
+                message=(
+                    f"AOI too small ({aoi_area_sq_km:.1f} km²). SkyFi minimum for orders is "
+                    f"{SKYFI_MIN_AOI_KM2} km². Use create_aoi_from_point with a larger radius."
+                ),
+            ).to_call_tool_result()
 
         # Validate AOI size against THIS archive's own min/max limits (per-archive,
         # not a global constant — SkyFi reports them in the error as min <= actual <= max).
@@ -754,6 +770,7 @@ def register(mcp: FastMCP) -> None:
             "confirmation_id": str(record.id),
             "estimated_cost_cents": estimated_cost_cents,
             "estimated_cost_dollars": cost_str,
+            "aoi_area_km2": round(aoi_area_sq_km, 2),
             "order_summary": summary,
             "skyfi_orders_url": "https://app.skyfi.com/orders",
             "IMPORTANT": (

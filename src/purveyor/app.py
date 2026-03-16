@@ -771,6 +771,21 @@ def create_app(settings: Any | None = None) -> FastAPI:
             }
         )
 
+    @app.delete("/webhooks/orders/{event_index}")
+    async def delete_webhook_event(event_index: int) -> JSONResponse:
+        """Delete a webhook event by its index in the deque."""
+        try:
+            del order_webhook_events[event_index]
+            return JSONResponse(content={"status": "ok", "remaining": len(order_webhook_events)})
+        except IndexError:
+            return JSONResponse(content={"status": "not_found"})
+
+    @app.delete("/webhooks/orders")
+    async def clear_webhook_events() -> JSONResponse:
+        """Clear all stored webhook events."""
+        order_webhook_events.clear()
+        return JSONResponse(content={"status": "ok", "remaining": 0})
+
     @app.get("/webhooks/orders/ui", response_class=HTMLResponse)
     async def webhook_events_ui() -> HTMLResponse:
         """Live-polling HTML viewer for demo order webhook events."""
@@ -819,6 +834,19 @@ def create_app(settings: Any | None = None) -> FastAPI:
             cursor: pointer; user-select: none;
         }}
         .sound-toggle:hover {{ background: #30363d; }}
+        .clear-all-btn {{
+            background: #21262d; border: 1px solid #30363d; color: #8b949e;
+            border-radius: 6px; padding: 3px 10px; font-size: 12px;
+            cursor: pointer; user-select: none; margin-left: auto;
+        }}
+        .clear-all-btn:hover {{ background: #f8514922; border-color: #f85149; color: #f85149; }}
+        .delete-btn {{
+            background: none; border: none; color: #8b949e;
+            cursor: pointer; font-size: 16px; padding: 2px 6px;
+            border-radius: 4px; line-height: 1;
+            transition: color 0.2s, background 0.2s;
+        }}
+        .delete-btn:hover {{ color: #f85149; background: #f8514922; }}
         .event {{
             background: #161b22; border: 1px solid #30363d;
             border-radius: 8px; padding: 16px; margin: 12px 0;
@@ -866,6 +894,7 @@ def create_app(settings: Any | None = None) -> FastAPI:
         <span class="meta" id="updated">Connecting&hellip;</span>
         <span class="meta">&bull; <span class="event-count" id="count">0</span> events</span>
         <button class="sound-toggle" id="sound-btn" title="Toggle notification sound">&#x1F515; Sound off</button>
+        <button class="clear-all-btn" id="clear-btn" onclick="clearAll()" title="Clear all events">Clear all</button>
     </div>
     <p class="meta">Webhook URL: <code>{webhook_url_display}</code></p>
     <div id="events"></div>
@@ -916,7 +945,7 @@ def create_app(settings: Any | None = None) -> FastAPI:
         }}
 
         // ── event rendering ────────────────────────────────────────────────
-        function buildEventEl(e, isNew) {{
+        function buildEventEl(e, isNew, index) {{
             const p = e.payload || {{}};
             const status = (p.event && p.event.status) ? p.event.status : 'UNKNOWN';
             const orderInfo = p.order_info || p.orderInfo || {{}};
@@ -928,10 +957,14 @@ def create_app(settings: Any | None = None) -> FastAPI:
             const div = document.createElement('div');
             div.className = 'event' + (isNew ? ' event-new' : '');
             div.dataset.ts = e.received_at || '';
+            div.dataset.index = index;
             div.innerHTML =
                 '<div class="event-header">'
                 + '<span class="status status-' + status + '">' + status + '</span>'
+                + '<div style="display:flex;align-items:center;gap:8px">'
                 + '<span class="timestamp">' + (e.received_at || '') + '</span>'
+                + '<button class="delete-btn" onclick="deleteEvent(' + index + ')" title="Remove this event">\u2715</button>'
+                + '</div>'
                 + '</div>'
                 + '<div>Order: <a href="' + orderUrl + '" target="_blank" class="order-link">' + orderId + '</a>'
                 + (orderType ? ' (' + orderType + ')' : '') + '</div>'
@@ -942,11 +975,20 @@ def create_app(settings: Any | None = None) -> FastAPI:
             return div;
         }}
 
-        function updateEventList(events, newCount) {{
+        function updateEventList(events, newCount, forceRedraw) {{
             const container = document.getElementById('events');
 
             if (events.length === 0) {{
                 container.innerHTML = '<div class="empty">No webhook events yet.<br>Place an order with webhook_url pointed here to see events.</div>';
+                return;
+            }}
+
+            if (forceRedraw) {{
+                // Full re-render so data-index attributes are correct after deletions
+                container.innerHTML = '';
+                events.forEach((e, i) => {{
+                    container.appendChild(buildEventEl(e, false, i));
+                }});
                 return;
             }}
 
@@ -960,7 +1002,7 @@ def create_app(settings: Any | None = None) -> FastAPI:
                 const e = events[i];
                 const ts = e.received_at || '';
                 if (!existing.has(ts)) {{
-                    const el = buildEventEl(e, true);
+                    const el = buildEventEl(e, true, i);
                     container.insertBefore(el, container.firstChild);
                     addedCount++;
                 }}
@@ -995,6 +1037,37 @@ def create_app(settings: Any | None = None) -> FastAPI:
         }}
         setInterval(tick, 1000);
 
+        // ── delete / clear ─────────────────────────────────────────────────
+        let pendingForceRedraw = false;
+
+        async function deleteEvent(index) {{
+            const cards = document.querySelectorAll('.event');
+            const card = cards[index];
+            if (card) {{
+                card.style.transition = 'opacity 0.3s, transform 0.3s, max-height 0.3s, margin 0.3s, padding 0.3s';
+                card.style.opacity = '0';
+                card.style.transform = 'translateX(20px)';
+                card.style.maxHeight = card.offsetHeight + 'px';
+                requestAnimationFrame(() => {{
+                    card.style.maxHeight = '0';
+                    card.style.marginTop = '0';
+                    card.style.marginBottom = '0';
+                    card.style.paddingTop = '0';
+                    card.style.paddingBottom = '0';
+                }});
+            }}
+            await fetch('/webhooks/orders/' + index, {{ method: 'DELETE' }});
+            pendingForceRedraw = true;
+            setTimeout(() => poll(), 400);
+        }}
+
+        async function clearAll() {{
+            if (!confirm('Clear all webhook events?')) return;
+            await fetch('/webhooks/orders', {{ method: 'DELETE' }});
+            pendingForceRedraw = true;
+            poll();
+        }}
+
         // ── poll ───────────────────────────────────────────────────────────
         async function poll() {{
             try {{
@@ -1004,15 +1077,18 @@ def create_app(settings: Any | None = None) -> FastAPI:
                 setConnected(true);
                 countEl.textContent = data.total_stored;
 
-                const newCount = data.total_stored - lastCount;
-                if (data.total_stored !== lastCount) {{
-                    updateEventList(data.events, newCount > 0 ? newCount : data.events.length);
+                const forceRedraw = pendingForceRedraw;
+                pendingForceRedraw = false;
+
+                if (forceRedraw || data.total_stored !== lastCount) {{
+                    const newCount = data.total_stored - lastCount;
+                    updateEventList(data.events, newCount > 0 ? newCount : data.events.length, forceRedraw);
                     lastCount = data.total_stored;
                     secondsSince = 0;
                     updatedEl.textContent = 'Just updated';
                 }} else if (lastCount === 0) {{
                     // Ensure empty state renders on first load
-                    updateEventList([], 0);
+                    updateEventList([], 0, false);
                     secondsSince = 0;
                     updatedEl.textContent = 'Just updated';
                 }}
