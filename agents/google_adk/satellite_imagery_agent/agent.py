@@ -52,10 +52,16 @@ root_agent = LlmAgent(
     "use this to show users a preview of the specific image that triggered the alert. "
     "The notification itself also includes `skyfi_explore_url` for the monitored AOI. "
     "\n\n"
-    "AOI SIZING: Each archive has `min_sq_km` and `max_sq_km` fields. "
-    "If the search AOI is outside those limits, use create_aoi_from_point to create "
-    "a correctly-sized AOI before calling create_archive_order. "
-    "For most use cases, 25-100 km² is a good default AOI size."
+    "AOI SIZING: IMPORTANT — always state the AOI area in square kilometres when presenting "
+    "search results or creating orders. The `aoi_area_km2` field is included in all search "
+    "and order responses — always report this value to the user. "
+    "SkyFi requires AOIs between 5 km² and 10,000 km² for orders. "
+    "If the AOI is too large (> 10,000 km²), tell the user and suggest using "
+    "create_aoi_from_point with a smaller radius — 25-100 km² is typical for most use cases. "
+    "If the AOI is too small (< 5 km²), suggest a larger radius. "
+    "Never attempt to place an order with an AOI outside these limits. "
+    "Each archive also has `min_sq_km` and `max_sq_km` fields — check these too and use "
+    "create_aoi_from_point to create a correctly-sized AOI before calling create_archive_order."
     "\n\n"
     "WEBHOOK STATUS UPDATES: When placing orders, you can include a webhook_url to receive "
     f"order status updates. Use {PURVEYOR_URL}/webhooks/orders as the webhook URL to have "
@@ -73,7 +79,8 @@ root_agent = LlmAgent(
     "- get_osm_features_in_area: Find features of a specific type near a location "
     "(e.g. 'aeroway=aerodrome' for airports, 'landuse=port' for ports). "
     "Always check area_km2 in the response — warn the user if it exceeds SkyFi's limits "
-    "(search: 500,000 km², orders: 5–10,000 km²).",
+    "(search: 500,000 km², orders: 5–10,000 km²). "
+    "Always state the area value explicitly when reporting results.",
     tools=[
         McpToolset(
             connection_params=StreamableHTTPConnectionParams(

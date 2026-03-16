@@ -126,7 +126,7 @@ async def test_create_archive_order_rejects_oversized_aoi() -> None:
 
     error = _parse_error(result)
     assert error["code"] == "aoi_too_large"
-    assert "10000" in error["message"]  # archive_max formatted with .0f
+    assert "10,000" in error["message"]
     assert "create_aoi_from_point" in error["message"]
 
 

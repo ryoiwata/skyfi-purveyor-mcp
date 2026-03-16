@@ -199,6 +199,8 @@ def register(mcp: FastMCP) -> None:
         dates = [a.capture_timestamp for a in archives]
 
         summary_parts = [f"Found {total} archives."]
+        if aoi_area_km2 is not None:
+            summary_parts.append(f"Search AOI area: {aoi_area_km2:,.1f} km².")
         if dates:
             summary_parts.append(
                 f"Date range: {min(dates).date()} to {max(dates).date()}."
