@@ -74,7 +74,13 @@ def _make_token(fernet_key: bytes, payload: dict[str, Any] | None = None) -> str
     return encrypt_confirmation_token(payload, fernet_key)
 
 
-def _persist_record(app: Any, token: str, status: str = "pending", order_type: str = "ARCHIVE") -> None:
+def _persist_record(
+    app: Any,
+    token: str,
+    status: str = "pending",
+    order_type: str = "ARCHIVE",
+    order_payload_json: str | None = None,
+) -> None:
     """Write an OrderConfirmation row directly via the app's session_factory."""
     import asyncio
     from datetime import UTC, datetime, timedelta
@@ -92,6 +98,7 @@ def _persist_record(app: Any, token: str, status: str = "pending", order_type: s
                 api_key_hash="a" * 64,
                 estimated_cost_cents=42500,
                 expires_at=datetime.now(UTC) + timedelta(minutes=30),
+                order_payload_json=order_payload_json,
             )
             session.add(record)
             await session.commit()
@@ -272,6 +279,102 @@ def test_base32_url_token_case_insensitive(fernet_key: bytes) -> None:
 
     recovered = url_token_to_fernet(url_token)
     assert recovered == fernet_token
+
+
+# ---------------------------------------------------------------------------
+# New production path: minimal token (api_key only) + order_payload_json in DB
+# ---------------------------------------------------------------------------
+
+
+def test_confirm_page_new_path_order_payload_json_renders_200(
+    client: Any, app: Any, fernet_key: bytes
+) -> None:
+    """NEW path: minimal token (api_key only) + order_payload_json in DB → 200.
+
+    This is the production path since fix(core): store order params in DB to
+    shorten confirmation URL tokens (commit 7ed06f7). The GET handler reads
+    order params from order_payload_json and never decrypts the Fernet token.
+    """
+    import json
+
+    fernet_token, url_token = _make_url_token(
+        fernet_key, {"api_key": "sk_live_prod_key_abcdef1234567890"}
+    )
+    order_payload_json = json.dumps({
+        "order_params": {
+            "aoi": "POLYGON((-97.72 30.28, -97.72 30.24, -97.76 30.24, -97.76 30.28, -97.72 30.28))",
+            "archiveId": "ce4394a5-6b0b-4e96-8717-1b3747772701",
+            "deliveryDriver": "NONE",
+            "deliveryParams": None,
+            "label": "Platform Order",
+            "orderLabel": "Platform Order",
+            "metadata": None,
+            "webhookUrl": None,
+        },
+        "webhook_url": None,
+    })
+    _persist_record(app, fernet_token, order_payload_json=order_payload_json)
+
+    response = client.get(f"/confirm/{url_token}")
+
+    assert response.status_code == 200, (
+        f"Expected 200 but got {response.status_code}. "
+        f"Response: {response.text[:300]}"
+    )
+
+
+def test_confirm_page_new_path_wrong_key_still_renders_200(
+    client: Any, app: Any
+) -> None:
+    """NEW path: wrong Fernet key + order_payload_json set → still 200.
+
+    When order_payload_json is set, the GET handler never decrypts the token,
+    so a wrong key should NOT cause 'Link Expired'.
+    """
+    import json
+
+    from cryptography.fernet import Fernet
+
+    from purveyor.core.confirmation import encrypt_confirmation_token, fernet_to_url_token
+
+    other_key = Fernet.generate_key()
+    fernet_token = encrypt_confirmation_token({"api_key": "wrong-key-test"}, other_key)
+    url_token = fernet_to_url_token(fernet_token)
+    order_payload_json = json.dumps({
+        "order_params": {
+            "aoi": "POLYGON((-97.72 30.28, -97.72 30.24, -97.76 30.24, -97.76 30.28, -97.72 30.28))",
+            "archiveId": "some-id",
+            "deliveryDriver": "NONE",
+        },
+        "webhook_url": None,
+    })
+    _persist_record(app, fernet_token, order_payload_json=order_payload_json)
+
+    response = client.get(f"/confirm/{url_token}")
+
+    assert response.status_code == 200, (
+        f"NEW path must render even with wrong key (no decryption needed). "
+        f"Got {response.status_code}: {response.text[:200]}"
+    )
+
+
+def test_truncated_url_token_returns_410(client: Any, fernet_key: bytes) -> None:
+    """A URL token truncated to half its length → 410 Link Expired.
+
+    This was the root cause of the production bug: LLMs truncated long (~960-char)
+    confirmation URLs.  Even short tokens (194 chars) should be tested: a truncated
+    token decodes to a different Fernet token, producing a different hash that does
+    not match the DB record.
+    """
+    _fernet_token, url_token = _make_url_token(
+        fernet_key, {"api_key": "truncation-test-key"}
+    )
+    # Truncate to first half — simulates LLM URL truncation
+    truncated_url_token = url_token[: len(url_token) // 2]
+
+    response = client.get(f"/confirm/{truncated_url_token}")
+
+    assert response.status_code == 410
 
 
 def test_token_hash_identical_after_base32_url_path_round_trip(
