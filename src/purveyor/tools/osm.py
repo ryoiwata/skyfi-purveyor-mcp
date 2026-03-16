@@ -20,7 +20,7 @@ from purveyor.core.errors import ErrorCode, ToolError
 
 # Share Nominatim semaphore with geospatial.py for global 1 req/sec rate limit
 from purveyor.tools.geospatial import _nominatim_semaphore
-from purveyor.tools.preview import build_skyfi_explore_url_from_bbox
+from purveyor.tools.preview import build_skyfi_explore_url_from_wkt
 
 McpContext = Context[Any, Any, Any]
 
@@ -346,11 +346,10 @@ def register(mcp: FastMCP) -> None:
             )
 
             skyfi_explore_url: str | None = None
-            if bbox:
-                try:
-                    skyfi_explore_url = build_skyfi_explore_url_from_bbox(bbox)
-                except Exception as exc:
-                    log.warning("osm_explore_url_build_error", error=str(exc))
+            try:
+                skyfi_explore_url = build_skyfi_explore_url_from_wkt(wkt)
+            except Exception as exc:
+                log.warning("osm_explore_url_build_error", error=str(exc))
 
             entry: dict[str, Any] = {
                 "name": item.get("name")
@@ -505,11 +504,10 @@ def register(mcp: FastMCP) -> None:
             )
 
         skyfi_explore_url: str | None = None
-        if bbox:
-            try:
-                skyfi_explore_url = build_skyfi_explore_url_from_bbox(bbox)
-            except Exception as exc:
-                log.warning("osm_explore_url_build_error", place_name=place_name, error=str(exc))
+        try:
+            skyfi_explore_url = build_skyfi_explore_url_from_wkt(wkt)
+        except Exception as exc:
+            log.warning("osm_explore_url_build_error", place_name=place_name, error=str(exc))
 
         result: dict[str, Any] = {
             "name": best.get("name") or place_name,
