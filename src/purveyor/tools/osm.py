@@ -20,6 +20,7 @@ from purveyor.core.errors import ErrorCode, ToolError
 
 # Share Nominatim semaphore with geospatial.py for global 1 req/sec rate limit
 from purveyor.tools.geospatial import _nominatim_semaphore
+from purveyor.tools.preview import build_skyfi_explore_url_from_bbox
 
 McpContext = Context[Any, Any, Any]
 
@@ -344,6 +345,13 @@ def register(mcp: FastMCP) -> None:
                 else []
             )
 
+            skyfi_explore_url: str | None = None
+            if bbox:
+                try:
+                    skyfi_explore_url = build_skyfi_explore_url_from_bbox(bbox)
+                except Exception as exc:
+                    log.warning("osm_explore_url_build_error", error=str(exc))
+
             entry: dict[str, Any] = {
                 "name": item.get("name")
                 or (item.get("display_name") or "").split(",")[0].strip(),
@@ -356,6 +364,8 @@ def register(mcp: FastMCP) -> None:
                 "aoi_wkt": wkt,
                 "area_km2": round(area_km2, 2),
             }
+            if skyfi_explore_url:
+                entry["skyfi_explore_url"] = skyfi_explore_url
             if note:
                 entry["note"] = note
             results.append(entry)
@@ -494,6 +504,13 @@ def register(mcp: FastMCP) -> None:
                 f"(5-10,000 km2). Suitable for archive searches, not tasking orders."
             )
 
+        skyfi_explore_url: str | None = None
+        if bbox:
+            try:
+                skyfi_explore_url = build_skyfi_explore_url_from_bbox(bbox)
+            except Exception as exc:
+                log.warning("osm_explore_url_build_error", place_name=place_name, error=str(exc))
+
         result: dict[str, Any] = {
             "name": best.get("name") or place_name,
             "admin_level": result_admin_level,
@@ -503,6 +520,8 @@ def register(mcp: FastMCP) -> None:
             "bbox": bbox,
             "warning": warning,
         }
+        if skyfi_explore_url:
+            result["skyfi_explore_url"] = skyfi_explore_url
         if simplification_note:
             result["simplification_note"] = simplification_note
 

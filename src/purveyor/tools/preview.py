@@ -20,6 +20,22 @@ def build_skyfi_explore_url(aoi_wkt: str) -> str:
     return f"https://app.skyfi.com/explore?aoi={encoded_aoi}"
 
 
+def build_skyfi_explore_url_from_bbox(bbox: list[float]) -> str:
+    """Build a SkyFi explore URL from a bounding box [west, south, east, north].
+
+    Uses a 4-vertex rectangle instead of the full polygon to keep the URL short.
+    Suitable for explore/preview links where an approximate boundary is sufficient.
+    """
+    if len(bbox) != 4:
+        raise ValueError(f"Expected [west, south, east, north], got {bbox!r}")
+    west, south, east, north = bbox
+    bbox_wkt = (
+        f"POLYGON(({west} {south}, {east} {south}, "
+        f"{east} {north}, {west} {north}, {west} {south}))"
+    )
+    return build_skyfi_explore_url(bbox_wkt)
+
+
 def build_skyfi_order_url(order_id: str) -> str:
     """Build a browser-friendly URL to view an order on SkyFi."""
     return f"https://app.skyfi.com/orders/{order_id}"

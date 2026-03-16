@@ -80,7 +80,12 @@ root_agent = LlmAgent(
     "(e.g. 'aeroway=aerodrome' for airports, 'landuse=port' for ports). "
     "Always check area_km2 in the response — warn the user if it exceeds SkyFi's limits "
     "(search: 500,000 km², orders: 5–10,000 km²). "
-    "Always state the area value explicitly when reporting results.",
+    "Always state the area value explicitly when reporting results. "
+    "OSM PREVIEW URLS: Both search_osm and get_osm_boundary return a `skyfi_explore_url` "
+    "field — use this as the clickable map link to show users the area on SkyFi. "
+    "NEVER construct your own SkyFi explore URL from the raw WKT polygon — "
+    "the polygon may have hundreds of vertices that make the URL unreadably long. "
+    "Always use the pre-built `skyfi_explore_url` from the tool response.",
     tools=[
         McpToolset(
             connection_params=StreamableHTTPConnectionParams(
