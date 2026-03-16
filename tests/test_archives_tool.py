@@ -88,21 +88,20 @@ async def test_search_archives_with_wkt_returns_results() -> None:
     assert result["total"] == 3
     assert len(result["archives"]) == 3
     assert "Found 3 archives" in result["summary"]
-    # Each archive must have preview_url (crop viewer with AOI); skyfi_url is NOT included
-    # in search results to avoid the agent using the wrong URL format.
+    # Each archive must have skyfi_preview_url (crop viewer with AOI); raw skyfi_url is NOT included.
     for archive in result["archives"]:
-        assert "preview_url" in archive
-        assert "/explore/open/crop/" in archive["preview_url"]
-        assert archive["archive_id"] in archive["preview_url"]
+        assert "skyfi_preview_url" in archive
+        assert "/explore/open/crop/" in archive["skyfi_preview_url"]
+        assert archive["archive_id"] in archive["skyfi_preview_url"]
         assert "skyfi_url" not in archive
 
 
 @pytest.mark.asyncio
 async def test_get_archive_details_includes_preview_url() -> None:
-    """get_archive_details includes preview_url inside the archive dict (not top-level).
+    """get_archive_details includes skyfi_preview_url inside the archive dict (not top-level).
 
-    preview_url is nested inside result["archive"] so that its location is consistent
-    with search_archives, where preview_url is inside each archive object.
+    skyfi_preview_url is nested inside result["archive"] so that its location is consistent
+    with search_archives, where skyfi_preview_url is inside each archive object.
     """
     archive = _make_archive()
     cached_client = MagicMock()
@@ -113,11 +112,11 @@ async def test_get_archive_details_includes_preview_url() -> None:
 
     assert isinstance(result, dict)
     archive_data = result["archive"]
-    assert "preview_url" in archive_data, "preview_url must be inside result['archive']"
-    assert f"/explore/open/crop/{ARCHIVE_ID}" in archive_data["preview_url"]
-    assert "aoi=POLYGON" in archive_data["preview_url"]
-    # preview_url must not be at the top level (would be inconsistent with search_archives)
-    assert "preview_url" not in result, "preview_url should be inside archive dict, not top-level"
+    assert "skyfi_preview_url" in archive_data, "skyfi_preview_url must be inside result['archive']"
+    assert f"/explore/open/crop/{ARCHIVE_ID}" in archive_data["skyfi_preview_url"]
+    assert "aoi=POLYGON" in archive_data["skyfi_preview_url"]
+    # skyfi_preview_url must not be at the top level (would be inconsistent with search_archives)
+    assert "skyfi_preview_url" not in result, "skyfi_preview_url should be inside archive dict, not top-level"
     # summary references the explore viewer
     assert "/explore/open/crop/" in result["summary"]
 

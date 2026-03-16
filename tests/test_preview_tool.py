@@ -74,7 +74,7 @@ async def test_get_preview_url_tool_returns_url() -> None:
 
 
 # ---------------------------------------------------------------------------
-# search_archives includes preview_url
+# search_archives includes skyfi_preview_url
 # ---------------------------------------------------------------------------
 
 
@@ -93,7 +93,7 @@ def _make_search_ctx(cached_client: MagicMock) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_search_archives_includes_preview_url() -> None:
-    """Each archive in search_archives results includes a preview_url."""
+    """Each archive in search_archives results includes a skyfi_preview_url."""
     from purveyor.core.skyfi_types import ApiProvider, ArchiveResponse, GetArchivesResponse
 
     archive_id = str(uuid.uuid4())
@@ -132,8 +132,8 @@ async def test_search_archives_includes_preview_url() -> None:
     assert len(result["archives"]) == 1
     archive_result = result["archives"][0]
 
-    assert "preview_url" in archive_result
-    preview_url = archive_result["preview_url"]
+    assert "skyfi_preview_url" in archive_result
+    preview_url = archive_result["skyfi_preview_url"]
     assert f"/explore/open/crop/{archive_id}" in preview_url
     assert "aoi=POLYGON" in preview_url
     assert " " not in preview_url

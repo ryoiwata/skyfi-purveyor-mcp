@@ -12,7 +12,7 @@ from mcp.types import ToolAnnotations
 from purveyor.core.errors import ErrorCode, ToolError
 from purveyor.tools._helpers import get_skyfi_client
 from purveyor.tools.geospatial import _calculate_area_sq_km
-from purveyor.tools.preview import build_skyfi_archive_url, build_skyfi_preview_url
+from purveyor.tools.preview import build_skyfi_preview_url
 
 
 def _best_thumbnail_url(thumbnail_urls: dict[str, str] | None) -> str | None:
@@ -222,9 +222,9 @@ def register(mcp: FastMCP) -> None:
         def _archive_with_url(a: Any) -> dict[str, Any]:
             d: dict[str, Any] = a.model_dump(mode="json")
             d["archive_id"] = a.archive_id
-            d["skyfi_archive_url"] = build_skyfi_archive_url(a.archive_id)
-            # preview_url: interactive crop viewer with AOI overlaid (client-side URL).
-            d["preview_url"] = build_skyfi_preview_url(a.archive_id, wkt)
+            # skyfi_preview_url: interactive crop viewer with AOI overlaid (client-side URL).
+            # Use this as the canonical preview link — never the raw archive API URL.
+            d["skyfi_preview_url"] = build_skyfi_preview_url(a.archive_id, wkt)
             # thumbnail_url: SkyFi-provided image thumbnail (always works when present).
             thumb = _best_thumbnail_url(a.thumbnail_urls)
             if thumb:
@@ -273,11 +273,11 @@ def register(mcp: FastMCP) -> None:
         # Build archive dict and annotate with preview fields before returning.
         archive_dict: dict[str, Any] = archive.model_dump(mode="json")
         archive_dict["archive_id"] = archive_id
-        archive_dict["skyfi_archive_url"] = build_skyfi_archive_url(archive_id)
 
-        # preview_url: interactive crop viewer built from the archive's own footprint.
+        # skyfi_preview_url: interactive crop viewer built from the archive's own footprint.
+        # Use this as the canonical preview link — never the raw archive API URL.
         preview_url = build_skyfi_preview_url(archive_id, archive.footprint)
-        archive_dict["preview_url"] = preview_url
+        archive_dict["skyfi_preview_url"] = preview_url
 
         # thumbnail_url: SkyFi-provided image thumbnail (API-sourced, always works when set).
         thumb = _best_thumbnail_url(archive.thumbnail_urls)
