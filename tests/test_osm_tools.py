@@ -205,6 +205,46 @@ def test_calculate_area_sq_km_never_negative() -> None:
     assert _calculate_area_sq_km(geom) >= 0
 
 
+def test_linestring_convex_hull_produces_non_degenerate_polygon() -> None:
+    """A LineString GeoJSON converts via convex hull to a usable polygon.
+
+    This is the key regression test for the 'search_osm stops abruptly' bug:
+    a near-collinear LineString (e.g. a canal section in Nominatim results)
+    must not produce a degenerate zero-area result that bypasses the area
+    filter and causes shapely_wkt.loads() or _calculate_area_sq_km() to fail
+    with an unhandled exception.
+    """
+    from shapely import wkt as shapely_wkt
+
+    # Three non-collinear points — should produce a triangle (valid polygon)
+    linestring_geojson = {
+        "type": "LineString",
+        "coordinates": [
+            [32.3, 30.5],
+            [32.5, 30.7],
+            [32.7, 30.5],
+        ],
+    }
+    wkt, _note = _geojson_to_wkt(linestring_geojson)
+    geom = shapely_wkt.loads(wkt)
+    area = _calculate_area_sq_km(geom)
+    assert geom.is_valid
+    assert area > 0
+
+    # Three collinear points — convex hull collapses to a LineString.
+    # _geojson_to_wkt must raise ValueError so search_osm's try/except can skip it.
+    collinear_geojson = {
+        "type": "LineString",
+        "coordinates": [
+            [32.3, 30.5],
+            [32.5, 30.5],
+            [32.7, 30.5],
+        ],
+    }
+    with pytest.raises(ValueError, match="non-polygon"):
+        _geojson_to_wkt(collinear_geojson)
+
+
 # ---------------------------------------------------------------------------
 # _nominatim_search — HTTP mock tests
 # ---------------------------------------------------------------------------
