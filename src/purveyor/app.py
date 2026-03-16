@@ -713,6 +713,19 @@ def create_app(settings: Any | None = None) -> FastAPI:
         except Exception:
             body = {}
 
+        # Log every incoming webhook immediately — before any storage that could fail.
+        # Uses camelCase field names matching SkyFi's actual payload structure.
+        order_id = body.get("orderInfo", {}).get("id", "unknown") if isinstance(body, dict) else "unknown"
+        status = body.get("event", {}).get("status", "unknown") if isinstance(body, dict) else "unknown"
+        order_type = body.get("orderInfo", {}).get("orderType", "unknown") if isinstance(body, dict) else "unknown"
+        log.info(
+            "webhook_received",
+            order_id=order_id,
+            status=status,
+            order_type=order_type,
+            payload_keys=list(body.keys()) if isinstance(body, dict) else [],
+        )
+
         event: dict[str, Any] = {
             "received_at": datetime.datetime.now(datetime.UTC).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
@@ -720,6 +733,8 @@ def create_app(settings: Any | None = None) -> FastAPI:
             "payload": body,
         }
         order_webhook_events.appendleft(event)
+
+        log.info("webhook_stored", total_events=len(order_webhook_events))
 
         # Persist to DB — wrapped in try/except so the POST always returns 200
         session_factory = getattr(request.app.state, "session_factory", None)
@@ -737,11 +752,6 @@ def create_app(settings: Any | None = None) -> FastAPI:
             except Exception as exc:
                 log.warning("demo_webhook_persist_failed", error=str(exc))
 
-        log.info(
-            "demo_webhook_received",
-            total_stored=len(order_webhook_events),
-            status=body.get("event", {}).get("status") if isinstance(body, dict) else None,
-        )
         return JSONResponse(content={"status": "ok"})
 
     @app.get("/webhooks/orders")
