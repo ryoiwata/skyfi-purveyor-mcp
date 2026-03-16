@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -15,9 +15,9 @@ def build_skyfi_preview_url(archive_id: str, aoi_wkt: str) -> str:
 
 
 def build_skyfi_explore_url(aoi_wkt: str) -> str:
-    """Build a SkyFi explore URL filtered to an AOI."""
-    encoded_aoi = quote(aoi_wkt, safe="")
-    return f"https://app.skyfi.com/explore?aoi={encoded_aoi}"
+    """Build a SkyFi tasking URL filtered to an AOI."""
+    encoded_aoi = quote_plus(aoi_wkt)
+    return f"https://app.skyfi.com/tasking?s=DAY&r=HIGH&aoi={encoded_aoi}"
 
 
 def build_skyfi_explore_url_from_bbox(bbox: list[float]) -> str:
