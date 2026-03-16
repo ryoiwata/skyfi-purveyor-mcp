@@ -62,7 +62,18 @@ root_agent = LlmAgent(
     "updates sent to this Purveyor instance. After placing an order with that webhook_url, "
     "call list_webhook_events to check order progress in the conversation. "
     f"The user can also visit {PURVEYOR_URL}/webhooks/orders/ui in their browser "
-    "to watch events update in real-time (auto-refreshes every 5 seconds).",
+    "to watch events update in real-time (auto-refreshes every 5 seconds). "
+    "\n\n"
+    "OPENSTREETMAP TOOLS: Use these to get precise boundaries of real-world features — "
+    "they return WKT polygons you can pass directly to search_archives and ordering tools. "
+    "Prefer OSM boundaries over geocode_location when the user asks about a specific named "
+    "feature, as OSM gives the actual boundary shape rather than a bounding box. "
+    "- search_osm: Find any feature by name (parks, airports, ports, cities). "
+    "- get_osm_boundary: Get the official boundary of a city, state, or country. "
+    "- get_osm_features_in_area: Find features of a specific type near a location "
+    "(e.g. 'aeroway=aerodrome' for airports, 'landuse=port' for ports). "
+    "Always check area_km2 in the response — warn the user if it exceeds SkyFi's limits "
+    "(search: 500,000 km², orders: 5–10,000 km²).",
     tools=[
         McpToolset(
             connection_params=StreamableHTTPConnectionParams(

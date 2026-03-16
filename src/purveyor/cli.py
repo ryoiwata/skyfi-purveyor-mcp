@@ -46,16 +46,35 @@ def serve(local: bool, reload: bool, host: str, port: int, transport: str) -> No
     else:
         import uvicorn
 
-        from purveyor.app import create_app
+        if reload:
+            from pathlib import Path
 
-        app = create_app()
-        uvicorn.run(
-            app,
-            host=host,
-            port=port,
-            reload=reload,
-            log_level="info",
-        )
+            import purveyor as _purveyor_pkg
+
+            # Watch the installed package directory so reload fires on source changes
+            # regardless of which directory the CLI is invoked from.
+            src_dir = str(Path(_purveyor_pkg.__file__).parent)
+
+            # uvicorn requires an import string (not an object) to enable reload
+            uvicorn.run(
+                "purveyor.app:create_app",
+                factory=True,
+                host=host,
+                port=port,
+                reload=True,
+                reload_dirs=[src_dir],
+                log_level="info",
+            )
+        else:
+            from purveyor.app import create_app
+
+            uvicorn.run(
+                create_app(),
+                host=host,
+                port=port,
+                reload=False,
+                log_level="info",
+            )
 
 
 @main.command()
