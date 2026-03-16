@@ -129,13 +129,11 @@ def register(mcp: FastMCP) -> None:
             # be given to users as a clickable link — it requires X-Skyfi-Api-Key headers.
             d["skyfi_order_url"] = build_skyfi_order_url(oid) if oid else None
             # For archive orders: add skyfi_preview_url using archive_id + order AOI.
+            # If no AOI is available, omit the URL — never fall back to explore/archive links.
             archive_id = d.get("archive_id")
             order_aoi = d.get("aoi")
             if archive_id and order_aoi:
                 d["skyfi_preview_url"] = build_skyfi_preview_url(str(archive_id), order_aoi)
-            elif archive_id:
-                # Fallback when AOI is not in this response object
-                d["skyfi_preview_url"] = f"https://app.skyfi.com/explore/archive/{archive_id}"
             return d
 
         return {
@@ -215,15 +213,12 @@ def register(mcp: FastMCP) -> None:
         order_dict["skyfi_order_url"] = skyfi_order_url
 
         # For archive orders: add skyfi_preview_url using archive_id + order AOI.
+        # If no AOI is available, omit the URL — never fall back to explore/archive links.
         archive_id = order_dict.get("archive_id")
         order_aoi = order_dict.get("aoi")
         if archive_id and order_aoi:
             order_dict["skyfi_preview_url"] = build_skyfi_preview_url(
                 str(archive_id), order_aoi
-            )
-        elif archive_id:
-            order_dict["skyfi_preview_url"] = (
-                f"https://app.skyfi.com/explore/archive/{archive_id}"
             )
 
         return {
