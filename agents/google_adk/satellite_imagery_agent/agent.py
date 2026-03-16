@@ -50,7 +50,7 @@ root_agent = LlmAgent(
     "  Min order size: <min_sq_km> km²\n"
     "NEVER omit any of these fields. "
     "NEVER show a URL containing '/explore/archive/' — that pattern is forbidden. "
-    "ALWAYS use `skyfi_preview_url` (the /explore/open/crop/{id}?aoi=... format) as the "
+    "ALWAYS use `skyfi_preview_url` (the explore/open/crop/<archiveId>?aoi=<encoded_aoi> format) as the "
     "clickable preview link. If skyfi_preview_url is absent from the response, omit the "
     "link entirely rather than constructing or guessing an alternative URL. "
     "When listing multiple archives, number each result. "
