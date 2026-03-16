@@ -15,7 +15,7 @@ from mcp.types import ToolAnnotations
 from purveyor.core.constants import SKYFI_MAX_AOI_KM2, SKYFI_MIN_AOI_KM2
 from purveyor.core.errors import ErrorCode, ToolError
 from purveyor.tools._helpers import get_api_key_from_ctx, get_skyfi_client
-from purveyor.tools.preview import build_skyfi_order_url
+from purveyor.tools.preview import build_skyfi_archive_url, build_skyfi_order_url
 
 McpContext = Context[Any, Any, Any]
 
@@ -768,6 +768,8 @@ def register(mcp: FastMCP) -> None:
         response: dict[str, Any] = {
             "confirmation_url": confirmation_url,
             "confirmation_id": str(record.id),
+            "archive_id": archive_id,
+            "skyfi_archive_url": build_skyfi_archive_url(archive_id),
             "estimated_cost_cents": estimated_cost_cents,
             "estimated_cost_dollars": cost_str,
             "aoi_area_km2": round(aoi_area_sq_km, 2),

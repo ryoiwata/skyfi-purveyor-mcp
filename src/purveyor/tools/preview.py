@@ -69,6 +69,11 @@ def build_skyfi_explore_url_from_bbox(bbox: list[float]) -> str:
     return build_skyfi_explore_url(bbox_wkt)
 
 
+def build_skyfi_archive_url(archive_id: str) -> str:
+    """Build a browser-friendly URL to view an archive on SkyFi."""
+    return f"https://app.skyfi.com/explore/archive/{archive_id}"
+
+
 def build_skyfi_order_url(order_id: str) -> str:
     """Build a browser-friendly URL to view an order on SkyFi."""
     return f"https://app.skyfi.com/orders/{order_id}"
