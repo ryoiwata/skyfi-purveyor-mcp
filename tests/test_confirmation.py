@@ -120,6 +120,63 @@ def test_minimal_token_is_short() -> None:
     )
 
 
+def test_url_token_no_ambiguous_characters() -> None:
+    """fernet_to_url_token output must not contain O (letter) or I (letter).
+
+    LLMs (e.g. Gemini) confuse capital O with digit 0 and capital I with
+    digit 1 when rendering URLs.  The encoder substitutes O→0 and I→1 so
+    the output only contains characters that LLMs render faithfully.
+    """
+    from purveyor.core.confirmation import fernet_to_url_token
+
+    key = _make_fernet_key()
+    for _ in range(200):
+        token = encrypt_confirmation_token({"api_key": "test-key"}, key)
+        url_token = fernet_to_url_token(token)
+        assert "O" not in url_token, f"Letter O found in url_token: {url_token[:40]}..."
+        assert "I" not in url_token, f"Letter I found in url_token: {url_token[:40]}..."
+
+
+def test_url_token_round_trip() -> None:
+    """fernet_to_url_token and url_token_to_fernet are exact inverses."""
+    from purveyor.core.confirmation import fernet_to_url_token, url_token_to_fernet
+
+    key = _make_fernet_key()
+    token = encrypt_confirmation_token({"api_key": "test-key"}, key)
+    url_token = fernet_to_url_token(token)
+    recovered = url_token_to_fernet(url_token)
+    assert recovered == token
+
+
+def test_url_token_tolerates_llm_o_corruption() -> None:
+    """url_token_to_fernet recovers tokens where LLM changed digit 0 to letter O.
+
+    This simulates the Gemini corruption that caused 'Link Expired' errors:
+    the model saw our 0 (substituted for letter O) and rendered it as O.
+    The decoder must normalise 0/O equivalently.
+    """
+    from purveyor.core.confirmation import fernet_to_url_token, url_token_to_fernet
+
+    key = _make_fernet_key()
+    token = encrypt_confirmation_token({"api_key": "test-key"}, key)
+    url_token = fernet_to_url_token(token)
+
+    # Simulate LLM restoring 0→O and 1→I (reversing our substitution)
+    corrupted = url_token.replace("0", "O").replace("1", "I")
+    # Decoder must still recover the original Fernet token
+    assert url_token_to_fernet(corrupted) == token
+
+
+def test_url_token_case_insensitive() -> None:
+    """url_token_to_fernet accepts both upper and lowercase input."""
+    from purveyor.core.confirmation import fernet_to_url_token, url_token_to_fernet
+
+    key = _make_fernet_key()
+    token = encrypt_confirmation_token({"api_key": "test-key"}, key)
+    url_token = fernet_to_url_token(token)
+    assert url_token_to_fernet(url_token.lower()) == token
+
+
 async def test_confirm_order_loads_params_from_db(session_factory: Any) -> None:
     """confirm_order uses order_params from order_payload_json when present."""
     import json
