@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { toolResultEmitter } from "@/lib/tool-emitter";
 import { useMapContext, type MapAction } from "./MapContext";
+import type { ArchiveResult } from "@/types/sse-events";
 
 // ---------------------------------------------------------------------------
 // Tool output type helpers
@@ -26,9 +27,11 @@ function parseOutput(output: unknown): Record<string, unknown> | null {
  * Map a Purveyor tool result to one or more MapActions.
  *
  * Tool output shapes:
- *   geocode_location  → { coordinates: [lat, lon], aoi_wkt, display_name }
+ *   geocode_location      → { coordinates: [lat, lon], aoi_wkt, display_name }
  *   create_aoi_from_point → { aoi_wkt, actual_area_sq_km }
  *   calculate_aoi_area    → { area_sq_km, vertex_count, is_valid } (no new drawing needed)
+ *   search_archives       → { archives: ArchiveResult[], total, ... }
+ *   get_archive_details   → { archive_id, footprint, ... } (single archive)
  */
 function getMapActions(tool: string, output: unknown): MapAction[] {
   const data = parseOutput(output);
@@ -54,6 +57,23 @@ function getMapActions(tool: string, output: unknown): MapAction[] {
       const aoi_wkt = data.aoi_wkt as string | undefined;
       if (aoi_wkt) {
         return [{ type: "DRAW_AOI", wkt: aoi_wkt }];
+      }
+      return [];
+    }
+
+    case "search_archives": {
+      const archives = data.archives as ArchiveResult[] | undefined;
+      if (Array.isArray(archives) && archives.length > 0) {
+        return [{ type: "PLOT_ARCHIVES", archives }];
+      }
+      return [];
+    }
+
+    case "get_archive_details": {
+      // Single archive object — highlight it on the map
+      const archive_id = data.archive_id as string | undefined;
+      if (archive_id) {
+        return [{ type: "HIGHLIGHT_ARCHIVE", archiveId: archive_id }];
       }
       return [];
     }

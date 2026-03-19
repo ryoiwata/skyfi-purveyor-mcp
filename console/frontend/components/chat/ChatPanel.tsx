@@ -1,8 +1,70 @@
 "use client";
 
 import { useState } from "react";
-import { AssistantRuntimeProvider, Thread } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, Thread, makeAssistantToolUI } from "@assistant-ui/react";
 import { usePurveyorRuntime } from "@/lib/runtime";
+import { ArchiveResultCard } from "@/components/tools/ArchiveResultCard";
+import { useMapContext } from "@/components/map/MapContext";
+import type { ArchiveSearchOutput } from "@/types/sse-events";
+
+// ---------------------------------------------------------------------------
+// Tool UIs — registered via makeAssistantToolUI and rendered inside Thread
+// ---------------------------------------------------------------------------
+
+const SearchArchivesToolUI = makeAssistantToolUI<
+  Record<string, unknown>,
+  ArchiveSearchOutput | null
+>({
+  toolName: "search_archives",
+  render: ({ result }) => {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const { dispatch } = useMapContext();
+
+    if (!result) {
+      return (
+        <div className="flex items-center gap-2 text-xs text-gray-500 py-1">
+          <span className="animate-spin">⟳</span> Searching SkyFi archive…
+        </div>
+      );
+    }
+
+    const archives = result.archives ?? [];
+    const total = result.total ?? archives.length;
+
+    if (archives.length === 0) {
+      return (
+        <div className="text-xs text-gray-500 py-1">No archives found.</div>
+      );
+    }
+
+    return (
+      <div className="flex flex-col gap-2 mt-1">
+        <div className="text-xs text-gray-500 font-medium">
+          {total} archive{total !== 1 ? "s" : ""} found
+          {total > 10 ? ` — showing top 10` : ""}
+        </div>
+        {archives.slice(0, 10).map((archive) => (
+          <ArchiveResultCard
+            key={archive.archive_id}
+            archive={archive}
+            onHighlight={(id) =>
+              dispatch({ type: "HIGHLIGHT_ARCHIVE", archiveId: id })
+            }
+          />
+        ))}
+        {total > 10 && (
+          <p className="text-xs text-gray-400 text-center">
+            {total - 10} more result{total - 10 !== 1 ? "s" : ""} — ask for more or refine filters
+          </p>
+        )}
+      </div>
+    );
+  },
+});
+
+// ---------------------------------------------------------------------------
+// API key banner
+// ---------------------------------------------------------------------------
 
 interface ApiKeyBannerProps {
   onSave: (key: string) => void;
@@ -31,6 +93,10 @@ function ApiKeyBanner({ onSave }: ApiKeyBannerProps) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Chat panel inner (needs runtime context)
+// ---------------------------------------------------------------------------
+
 interface ChatPanelInnerProps {
   skyfiApiKey: string;
 }
@@ -39,10 +105,16 @@ function ChatPanelInner({ skyfiApiKey }: ChatPanelInnerProps) {
   const runtime = usePurveyorRuntime(skyfiApiKey);
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      {/* Register tool UIs — must be inside AssistantRuntimeProvider */}
+      <SearchArchivesToolUI />
       <Thread />
     </AssistantRuntimeProvider>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Public component
+// ---------------------------------------------------------------------------
 
 export function ChatPanel() {
   const [, setSkyfiApiKey] = useState("");

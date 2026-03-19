@@ -5,6 +5,8 @@ import {
   useLocalRuntime,
   type ChatModelAdapter,
   type ThreadMessage,
+  type ThreadAssistantContentPart,
+  type ToolCallContentPart,
 } from "@assistant-ui/react";
 import { streamChat } from "@/lib/sse-client";
 import { toolResultEmitter } from "@/lib/tool-emitter";
@@ -59,24 +61,64 @@ export function usePurveyorRuntime(skyfiApiKey: string) {
         }
 
         const backendMessages = toBackendMessages(messages);
+
+        // Ordered content array: text part first, then tool calls as they arrive
+        const contentItems: ThreadAssistantContentPart[] = [
+          { type: "text" as const, text: "" },
+        ];
+        const TEXT_IDX = 0;
         let accumulated = "";
+
+        // FIFO queue per tool name: pending toolCallIds waiting for their result
+        const pendingCalls = new Map<string, string[]>();
+        // Index in contentItems for each toolCallId
+        const callIdToIdx = new Map<string, number>();
+        // Counter for unique IDs within this run
+        let callCounter = 0;
 
         const stream = streamChat(backendMessages, key, abortSignal);
 
         for await (const event of stream) {
           if (event.type === "text_delta") {
             accumulated += event.token;
-            yield {
-              content: [{ type: "text" as const, text: accumulated }],
+            contentItems[TEXT_IDX] = { type: "text" as const, text: accumulated };
+            yield { content: [...contentItems] };
+          } else if (event.type === "tool_call") {
+            const toolCallId = `${event.tool}_${++callCounter}`;
+            const toolCallPart: ToolCallContentPart = {
+              type: "tool-call" as const,
+              toolCallId,
+              toolName: event.tool,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              args: event.input as any,
+              argsText: JSON.stringify(event.input),
             };
+            const idx = contentItems.length;
+            contentItems.push(toolCallPart);
+            callIdToIdx.set(toolCallId, idx);
+            const queue = pendingCalls.get(event.tool) ?? [];
+            queue.push(toolCallId);
+            pendingCalls.set(event.tool, queue);
+            yield { content: [...contentItems] };
           } else if (event.type === "tool_result") {
-            // Side-effect: forward to map and future inspector
+            // Match result to the oldest pending call for this tool
+            const queue = pendingCalls.get(event.tool);
+            const callId = queue?.shift();
+            if (callId !== undefined) {
+              const idx = callIdToIdx.get(callId)!;
+              const existing = contentItems[idx] as ToolCallContentPart;
+              contentItems[idx] = {
+                ...existing,
+                result: event.output,
+              } as ToolCallContentPart;
+            }
+            // Forward to map and future inspector
             toolResultEmitter.emit({ tool: event.tool, output: event.output });
+            yield { content: [...contentItems] };
           } else if (event.type === "error") {
             accumulated += `\n\n⚠️ Error: ${event.message}`;
-            yield {
-              content: [{ type: "text" as const, text: accumulated }],
-            };
+            contentItems[TEXT_IDX] = { type: "text" as const, text: accumulated };
+            yield { content: [...contentItems] };
           } else if (event.type === "done") {
             break;
           }
