@@ -7,6 +7,7 @@ import {
   type ThreadMessage,
 } from "@assistant-ui/react";
 import { streamChat } from "@/lib/sse-client";
+import { toolResultEmitter } from "@/lib/tool-emitter";
 import type { BackendMessage } from "@/types/sse-events";
 
 /**
@@ -68,6 +69,9 @@ export function usePurveyorRuntime(skyfiApiKey: string) {
             yield {
               content: [{ type: "text" as const, text: accumulated }],
             };
+          } else if (event.type === "tool_result") {
+            // Side-effect: forward to map and future inspector
+            toolResultEmitter.emit({ tool: event.tool, output: event.output });
           } else if (event.type === "error") {
             accumulated += `\n\n⚠️ Error: ${event.message}`;
             yield {
@@ -76,8 +80,6 @@ export function usePurveyorRuntime(skyfiApiKey: string) {
           } else if (event.type === "done") {
             break;
           }
-          // tool_call and tool_result are handled via SSE side-effects (map, inspector)
-          // they don't produce assistant-ui content for now
         }
       },
     }),
