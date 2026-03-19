@@ -12,7 +12,7 @@ import { Popup } from "maplibre-gl";
 import { parse as parseWkt } from "wellknown";
 import bbox from "@turf/bbox";
 import centroid from "@turf/centroid";
-import type { ArchiveResult } from "@/types/sse-events";
+import type { ArchiveResult, PassPrediction } from "@/types/sse-events";
 import { PROVIDER_COLORS } from "@/components/tools/ArchiveResultCard";
 
 // ---------------------------------------------------------------------------
@@ -26,7 +26,11 @@ export type MapAction =
   | { type: "PLOT_ARCHIVES"; archives: ArchiveResult[] }
   | { type: "HIGHLIGHT_ARCHIVE"; archiveId: string }
   | { type: "CLEAR_ARCHIVES" }
-  | { type: "FLASH_AOI" };
+  | { type: "FLASH_AOI" }
+  | { type: "DRAW_MONITORING_ZONE"; wkt: string; label?: string }
+  | { type: "CLEAR_MONITORING" }
+  | { type: "DRAW_PASS_TRACKS"; passes: PassPrediction[] }
+  | { type: "CLEAR_PASS_TRACKS" };
 
 // ---------------------------------------------------------------------------
 // Context value
@@ -104,6 +108,9 @@ export function MapContextProvider({ children }: { children: ReactNode }) {
   const archiveClickRef = useRef<
     ((e: MapMouseEvent & { features?: MapGeoJSONFeature[] }) => void) | null
   >(null);
+
+  // Monitoring zone pulse animation frame ID
+  const monitoringAnimRef = useRef<number | null>(null);
 
   const registerMap = useCallback((map: MaplibreMap) => {
     mapRef.current = map;
@@ -419,6 +426,282 @@ export function MapContextProvider({ children }: { children: ReactNode }) {
             }
           }
         }, 300);
+        break;
+      }
+
+      case "DRAW_MONITORING_ZONE": {
+        // Cancel any existing pulse animation
+        if (monitoringAnimRef.current !== null) {
+          cancelAnimationFrame(monitoringAnimRef.current);
+          monitoringAnimRef.current = null;
+        }
+
+        // Tear down existing layers
+        safeRemoveLayer(map, "monitoring-label");
+        safeRemoveLayer(map, "monitoring-pulse");
+        safeRemoveLayer(map, "monitoring-line");
+        safeRemoveLayer(map, "monitoring-fill");
+        safeRemoveSource(map, "monitoring-label-source");
+        safeRemoveSource(map, "monitoring");
+
+        let monitorGeometry;
+        try {
+          monitorGeometry = parseWkt(action.wkt);
+        } catch {
+          console.warn("MapContext: failed to parse monitoring WKT", action.wkt);
+          return;
+        }
+        if (!monitorGeometry) return;
+
+        const monitorFeature = {
+          type: "Feature" as const,
+          geometry: monitorGeometry,
+          properties: {},
+        };
+
+        map.addSource("monitoring", { type: "geojson", data: monitorFeature });
+
+        // Green fill
+        map.addLayer({
+          id: "monitoring-fill",
+          type: "fill",
+          source: "monitoring",
+          paint: { "fill-color": "#22c55e", "fill-opacity": 0.12 },
+        });
+
+        // Static base line
+        map.addLayer({
+          id: "monitoring-line",
+          type: "line",
+          source: "monitoring",
+          paint: { "line-color": "#16a34a", "line-width": 2, "line-opacity": 0.7 },
+        });
+
+        // Pulsing line layer (opacity animated via RAF)
+        map.addLayer({
+          id: "monitoring-pulse",
+          type: "line",
+          source: "monitoring",
+          paint: { "line-color": "#22c55e", "line-width": 5, "line-opacity": 0.5 },
+        });
+
+        // Fit map to monitoring zone bounds
+        const monitorBounds = bbox(monitorFeature) as [number, number, number, number];
+        map.fitBounds(
+          [[monitorBounds[0], monitorBounds[1]], [monitorBounds[2], monitorBounds[3]]],
+          { padding: 60, duration: 1200 }
+        );
+
+        // Text label at centroid
+        const monitorLabel = action.label ?? "Monitoring Active";
+        const monitorCenter = centroid(monitorFeature);
+        map.addSource("monitoring-label-source", {
+          type: "geojson",
+          data: {
+            type: "FeatureCollection",
+            features: [
+              {
+                type: "Feature",
+                geometry: monitorCenter.geometry,
+                properties: { label: monitorLabel },
+              },
+            ],
+          },
+        });
+        map.addLayer({
+          id: "monitoring-label",
+          type: "symbol",
+          source: "monitoring-label-source",
+          layout: {
+            "text-field": ["get", "label"],
+            "text-size": 13,
+            "text-anchor": "center",
+          },
+          paint: {
+            "text-color": "#15803d",
+            "text-halo-color": "#ffffff",
+            "text-halo-width": 2,
+          },
+        });
+
+        // Start pulsing border animation
+        let pulseFrame = 0;
+        const animatePulse = () => {
+          const m = mapRef.current;
+          if (!m || !m.getLayer("monitoring-pulse")) {
+            monitoringAnimRef.current = null;
+            return;
+          }
+          const opacity = 0.2 + 0.8 * Math.abs(Math.sin(pulseFrame * 0.04));
+          m.setPaintProperty("monitoring-pulse", "line-opacity", opacity);
+          pulseFrame++;
+          monitoringAnimRef.current = requestAnimationFrame(animatePulse);
+        };
+        monitoringAnimRef.current = requestAnimationFrame(animatePulse);
+        break;
+      }
+
+      case "CLEAR_MONITORING": {
+        if (monitoringAnimRef.current !== null) {
+          cancelAnimationFrame(monitoringAnimRef.current);
+          monitoringAnimRef.current = null;
+        }
+        safeRemoveLayer(map, "monitoring-label");
+        safeRemoveLayer(map, "monitoring-pulse");
+        safeRemoveLayer(map, "monitoring-line");
+        safeRemoveLayer(map, "monitoring-fill");
+        safeRemoveSource(map, "monitoring-label-source");
+        safeRemoveSource(map, "monitoring");
+        break;
+      }
+
+      case "DRAW_PASS_TRACKS": {
+        // Clean up existing pass track layers
+        safeRemoveLayer(map, "pass-tracks-labels");
+        safeRemoveLayer(map, "pass-tracks-line");
+        safeRemoveSource(map, "pass-tracks-labels-source");
+        safeRemoveSource(map, "pass-tracks");
+
+        if (action.passes.length === 0) break;
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const trackFeatures: any[] = [];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const labelFeatures: any[] = [];
+
+        for (const pass of action.passes) {
+          let coords: [number, number][] | null = null;
+
+          // Format 1: footprint WKT (LineString or Polygon boundary)
+          if (typeof pass.footprint === "string") {
+            try {
+              const geom = parseWkt(pass.footprint);
+              if (geom?.type === "LineString") {
+                coords = geom.coordinates as [number, number][];
+              } else if (geom?.type === "Polygon") {
+                coords = geom.coordinates[0] as [number, number][];
+              }
+            } catch {
+              // ignore parse errors
+            }
+          }
+
+          // Format 2: explicit start/end lat-lon pairs
+          if (!coords) {
+            const sLon =
+              typeof pass.start_lon === "number"
+                ? pass.start_lon
+                : typeof pass.start_longitude === "number"
+                ? pass.start_longitude
+                : NaN;
+            const sLat =
+              typeof pass.start_lat === "number"
+                ? pass.start_lat
+                : typeof pass.start_latitude === "number"
+                ? pass.start_latitude
+                : NaN;
+            const eLon =
+              typeof pass.end_lon === "number"
+                ? pass.end_lon
+                : typeof pass.end_longitude === "number"
+                ? pass.end_longitude
+                : NaN;
+            const eLat =
+              typeof pass.end_lat === "number"
+                ? pass.end_lat
+                : typeof pass.end_latitude === "number"
+                ? pass.end_latitude
+                : NaN;
+
+            if (!isNaN(sLon) && !isNaN(sLat) && !isNaN(eLon) && !isNaN(eLat)) {
+              coords = [
+                [sLon, sLat],
+                [eLon, eLat],
+              ];
+            }
+          }
+
+          if (!coords || coords.length < 2) continue;
+
+          const passTime = String(
+            pass.aos_time ?? pass.start_time ?? pass.time ?? ""
+          );
+          const provider = String(
+            pass.provider ?? pass.satellite_provider ?? "Unknown"
+          );
+          const timeLabel = passTime
+            ? new Date(passTime).toLocaleTimeString("en-US", {
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false,
+              })
+            : "";
+
+          trackFeatures.push({
+            type: "Feature",
+            geometry: { type: "LineString", coordinates: coords },
+            properties: { provider, time: passTime },
+          });
+
+          // Label at midpoint of track
+          if (timeLabel) {
+            const mid = coords[Math.floor(coords.length / 2)];
+            labelFeatures.push({
+              type: "Feature",
+              geometry: { type: "Point", coordinates: mid },
+              properties: { label: `${provider} ${timeLabel}` },
+            });
+          }
+        }
+
+        if (trackFeatures.length === 0) break;
+
+        map.addSource("pass-tracks", {
+          type: "geojson",
+          data: { type: "FeatureCollection", features: trackFeatures },
+        });
+        map.addLayer({
+          id: "pass-tracks-line",
+          type: "line",
+          source: "pass-tracks",
+          paint: {
+            "line-color": "#8b5cf6",
+            "line-width": 2,
+            "line-dasharray": [4, 3],
+            "line-opacity": 0.85,
+          },
+        });
+
+        if (labelFeatures.length > 0) {
+          map.addSource("pass-tracks-labels-source", {
+            type: "geojson",
+            data: { type: "FeatureCollection", features: labelFeatures },
+          });
+          map.addLayer({
+            id: "pass-tracks-labels",
+            type: "symbol",
+            source: "pass-tracks-labels-source",
+            layout: {
+              "text-field": ["get", "label"],
+              "text-size": 10,
+              "text-anchor": "center",
+              "text-offset": [0, -1],
+            },
+            paint: {
+              "text-color": "#6d28d9",
+              "text-halo-color": "#ffffff",
+              "text-halo-width": 1.5,
+            },
+          });
+        }
+        break;
+      }
+
+      case "CLEAR_PASS_TRACKS": {
+        safeRemoveLayer(map, "pass-tracks-labels");
+        safeRemoveLayer(map, "pass-tracks-line");
+        safeRemoveSource(map, "pass-tracks-labels-source");
+        safeRemoveSource(map, "pass-tracks");
         break;
       }
     }

@@ -7,6 +7,7 @@ import { ArchiveResultCard } from "@/components/tools/ArchiveResultCard";
 import { OrderConfirmation } from "@/components/tools/OrderConfirmation";
 import { PricingTable } from "@/components/tools/PricingTable";
 import { FeasibilityCard } from "@/components/tools/FeasibilityCard";
+import { ScenarioButtons } from "@/components/chat/ScenarioButtons";
 import { useMapContext } from "@/components/map/MapContext";
 import type {
   ArchiveSearchOutput,
@@ -199,6 +200,8 @@ function ChatPanelInner({ skyfiApiKey }: ChatPanelInnerProps) {
       <CreateTaskingOrderToolUI />
       <GetPricingToolUI />
       <CheckFeasibilityToolUI />
+      {/* Scenario shortcut buttons — also inside provider so they can access runtime */}
+      <ScenarioButtons />
       <Thread />
     </AssistantRuntimeProvider>
   );

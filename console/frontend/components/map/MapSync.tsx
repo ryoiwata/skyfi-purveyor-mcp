@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { toolResultEmitter } from "@/lib/tool-emitter";
 import { useMapContext, type MapAction } from "./MapContext";
-import type { ArchiveResult } from "@/types/sse-events";
+import type { ArchiveResult, PassPrediction } from "@/types/sse-events";
 
 // ---------------------------------------------------------------------------
 // Tool output type helpers
@@ -82,6 +82,22 @@ function getMapActions(tool: string, output: unknown): MapAction[] {
     case "create_tasking_order": {
       // Flash the AOI to signal an order is being placed
       return [{ type: "FLASH_AOI" }];
+    }
+
+    case "setup_monitoring": {
+      const aoi_wkt = data.aoi_wkt as string | undefined;
+      if (aoi_wkt) {
+        return [{ type: "DRAW_MONITORING_ZONE", wkt: aoi_wkt, label: "Monitoring Active" }];
+      }
+      return [];
+    }
+
+    case "get_pass_predictions": {
+      const passes = data.passes as PassPrediction[] | undefined;
+      if (Array.isArray(passes) && passes.length > 0) {
+        return [{ type: "DRAW_PASS_TRACKS", passes }];
+      }
+      return [];
     }
 
     default:

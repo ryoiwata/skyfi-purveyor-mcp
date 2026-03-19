@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { OrderConfirmationOutput } from "@/types/sse-events";
+import { useOrdersContext } from "@/lib/orders-context";
 
 // ---------------------------------------------------------------------------
 // State machine types
@@ -28,6 +29,7 @@ export function OrderConfirmation({ output, orderType }: OrderConfirmationProps)
   const [state, setState] = useState<ConfirmState>("idle");
   const [orderId, setOrderId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const { addOrder } = useOrdersContext();
 
   const detectedType = orderType ?? (output.archive_id ? "archive" : "tasking");
 
@@ -55,18 +57,32 @@ export function OrderConfirmation({ output, orderType }: OrderConfirmationProps)
 
       if (action === "confirm") {
         if (res.status === 200 && data.status === "confirmed") {
-          setOrderId(data.order_id ?? null);
+          const confirmedId = data.order_id ?? null;
+          setOrderId(confirmedId);
           setState("confirmed");
+          addOrder({
+            orderId: confirmedId,
+            orderType: detectedType,
+            summary: output.order_summary,
+            costDollars: output.estimated_cost_dollars,
+            confirmedAt: new Date(),
+          });
+        } else if (res.status === 409 && data.status === "already_confirmed") {
+          const confirmedId = data.order_id ?? null;
+          setOrderId(confirmedId);
+          setState("confirmed");
+          addOrder({
+            orderId: confirmedId,
+            orderType: detectedType,
+            summary: output.order_summary,
+            costDollars: output.estimated_cost_dollars,
+            confirmedAt: new Date(),
+          });
         } else if (res.status === 410 || data.status === "expired") {
           setErrorMessage("This order link has expired. Please ask the agent to create a new order.");
           setState("error");
         } else if (res.status === 409) {
-          if (data.status === "already_confirmed") {
-            setOrderId(data.order_id ?? null);
-            setState("confirmed");
-          } else {
-            setState("cancelled");
-          }
+          setState("cancelled");
         } else if (res.status === 502) {
           setErrorMessage(data.message ?? "Order could not be placed. SkyFi returned an error.");
           setState("error");

@@ -95,11 +95,45 @@ export interface FeasibilityOutput {
 }
 
 // ---------------------------------------------------------------------------
+// Monitoring types (from setup_monitoring)
+// ---------------------------------------------------------------------------
+
+export interface MonitoringOutput {
+  notification_id: string;
+  aoi_wkt?: string;
+  provider?: string;
+  status: string;
+  summary: string;
+}
+
+// ---------------------------------------------------------------------------
 // Pass prediction types (from get_pass_predictions)
 // ---------------------------------------------------------------------------
 
+export interface PassPrediction {
+  pass_id?: string;
+  satellite_id?: string;
+  provider?: string;
+  satellite_provider?: string;
+  aos_time?: string;
+  los_time?: string;
+  start_time?: string;
+  end_time?: string;
+  max_elevation?: number;
+  footprint?: string;
+  start_lat?: number;
+  start_lon?: number;
+  start_latitude?: number;
+  start_longitude?: number;
+  end_lat?: number;
+  end_lon?: number;
+  end_latitude?: number;
+  end_longitude?: number;
+  [key: string]: unknown;
+}
+
 export interface PassPredictionOutput {
-  passes: Record<string, unknown>[];
+  passes: PassPrediction[];
   total: number;
   summary: string;
 }
