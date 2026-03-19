@@ -41,3 +41,65 @@ export interface ArchiveSearchOutput {
   aoi_area_km2?: number | null;
   summary: string;
 }
+
+// ---------------------------------------------------------------------------
+// Order confirmation types (from create_archive_order / create_tasking_order)
+// ---------------------------------------------------------------------------
+
+export interface OrderConfirmationOutput {
+  confirmation_url: string;
+  confirmation_id: string;
+  estimated_cost_cents: number;
+  estimated_cost_dollars: string;
+  aoi_area_km2: number;
+  order_summary: string;
+  // Archive-specific (present for create_archive_order)
+  archive_id?: string;
+  skyfi_preview_url?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Pricing types (from get_pricing)
+// ---------------------------------------------------------------------------
+
+export interface PricingOutput {
+  pricing_matrix: Record<string, unknown>;
+  aoi_area_sq_km: number | null;
+  filters_applied: {
+    product_type: string | null;
+    resolution: string | null;
+  };
+  summary: string;
+}
+
+// ---------------------------------------------------------------------------
+// Feasibility types (from check_feasibility)
+// ---------------------------------------------------------------------------
+
+export interface FeasibilityProviderScore {
+  provider: string;
+  score: number;
+  status: string;
+  opportunities: number;
+}
+
+export interface FeasibilityOutput {
+  feasibility_id: string;
+  status: "pending" | "complete";
+  overall_score?: number;
+  weather_score?: number | null;
+  provider_scores?: FeasibilityProviderScore[];
+  valid_until?: string;
+  message?: string;
+  summary: string;
+}
+
+// ---------------------------------------------------------------------------
+// Pass prediction types (from get_pass_predictions)
+// ---------------------------------------------------------------------------
+
+export interface PassPredictionOutput {
+  passes: Record<string, unknown>[];
+  total: number;
+  summary: string;
+}

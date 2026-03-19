@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
@@ -520,12 +520,15 @@ def create_app(settings: Any | None = None) -> FastAPI:
         request: Request,
         token: str,
         action: str = Form(...),
-    ) -> HTMLResponse:
+        resp_format: str = Query(default="html", alias="format"),
+    ) -> Response:
         """Handle confirm or cancel POST from the confirmation page form.
 
         The form sends `action=confirm` or `action=cancel`.
+        Add `?format=json` to receive a JSON response instead of HTML.
         The URL token is base32-encoded; decoded to Fernet token before use.
         """
+        use_json = resp_format == "json"
         from purveyor.core.confirmation import (
             cancel_confirmation,
             confirm_order,
@@ -543,6 +546,8 @@ def create_app(settings: Any | None = None) -> FastAPI:
             token = url_token_to_fernet(token)
         except Exception:
             log.warning("confirm_post_invalid_url_token")
+            if use_json:
+                return JSONResponse({"status": "expired", "code": "token_invalid"}, status_code=410)
             return templates.TemplateResponse(
                 request,
                 "confirm.html",
@@ -556,6 +561,8 @@ def create_app(settings: Any | None = None) -> FastAPI:
             async with session_factory() as session:
                 record = await get_confirmation_by_token(session, token)
                 if record is None:
+                    if use_json:
+                        return JSONResponse({"status": "expired", "code": "token_not_found"}, status_code=410)
                     return templates.TemplateResponse(
                         request,
                         "confirm.html",
@@ -566,17 +573,26 @@ def create_app(settings: Any | None = None) -> FastAPI:
                     await cancel_confirmation(session, record.id)
                 except ToolError as exc:
                     if exc.code == ErrorCode.ORDER_ALREADY_PLACED:
+                        order_id = str(record.skyfi_order_id) if record.skyfi_order_id else None
+                        if use_json:
+                            return JSONResponse(
+                                {"status": "already_confirmed", "order_id": order_id},
+                                status_code=409,
+                            )
                         return templates.TemplateResponse(
                             request,
                             "confirm.html",
                             {
                                 "state": "already_used",
                                 "already_used_action": "confirmed and placed",
-                                "skyfi_order_id": str(record.skyfi_order_id)
-                                if record.skyfi_order_id
-                                else None,
+                                "skyfi_order_id": order_id,
                             },
                             status_code=409,
+                        )
+                    if use_json:
+                        return JSONResponse(
+                            {"status": "error", "message": exc.message},
+                            status_code=400,
                         )
                     return templates.TemplateResponse(
                         request,
@@ -585,6 +601,8 @@ def create_app(settings: Any | None = None) -> FastAPI:
                         status_code=400,
                     )
 
+            if use_json:
+                return JSONResponse({"status": "cancelled"})
             return templates.TemplateResponse(
                 request,
                 "confirm.html",
@@ -602,6 +620,8 @@ def create_app(settings: Any | None = None) -> FastAPI:
                 )
             except ToolError as exc:
                 if exc.code in (ErrorCode.ORDER_EXPIRED,):
+                    if use_json:
+                        return JSONResponse({"status": "expired", "code": "order_expired"}, status_code=410)
                     return templates.TemplateResponse(
                         request,
                         "confirm.html",
@@ -609,6 +629,8 @@ def create_app(settings: Any | None = None) -> FastAPI:
                         status_code=410,
                     )
                 if exc.code == ErrorCode.ORDER_ALREADY_PLACED:
+                    if use_json:
+                        return JSONResponse({"status": "already_confirmed"}, status_code=409)
                     return templates.TemplateResponse(
                         request,
                         "confirm.html",
@@ -619,6 +641,8 @@ def create_app(settings: Any | None = None) -> FastAPI:
                         status_code=409,
                     )
                 if exc.code == ErrorCode.ORDER_ALREADY_CANCELLED:
+                    if use_json:
+                        return JSONResponse({"status": "already_cancelled"}, status_code=409)
                     return templates.TemplateResponse(
                         request,
                         "confirm.html",
@@ -627,6 +651,11 @@ def create_app(settings: Any | None = None) -> FastAPI:
                             "already_used_action": "cancelled",
                         },
                         status_code=409,
+                    )
+                if use_json:
+                    return JSONResponse(
+                        {"status": "error", "message": exc.message, "code": str(exc.code)},
+                        status_code=502,
                     )
                 return templates.TemplateResponse(
                     request,
@@ -683,6 +712,8 @@ def create_app(settings: Any | None = None) -> FastAPI:
             except Exception as _wh_exc:
                 log.warning("order_poller_post_confirm_failed", error=str(_wh_exc))
 
+        if use_json:
+            return JSONResponse({"status": "confirmed", "order_id": str(order_response.id)})
         return templates.TemplateResponse(
             request,
             "confirm.html",

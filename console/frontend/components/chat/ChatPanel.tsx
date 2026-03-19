@@ -4,8 +4,16 @@ import { useState } from "react";
 import { AssistantRuntimeProvider, Thread, makeAssistantToolUI } from "@assistant-ui/react";
 import { usePurveyorRuntime } from "@/lib/runtime";
 import { ArchiveResultCard } from "@/components/tools/ArchiveResultCard";
+import { OrderConfirmation } from "@/components/tools/OrderConfirmation";
+import { PricingTable } from "@/components/tools/PricingTable";
+import { FeasibilityCard } from "@/components/tools/FeasibilityCard";
 import { useMapContext } from "@/components/map/MapContext";
-import type { ArchiveSearchOutput } from "@/types/sse-events";
+import type {
+  ArchiveSearchOutput,
+  OrderConfirmationOutput,
+  PricingOutput,
+  FeasibilityOutput,
+} from "@/types/sse-events";
 
 // ---------------------------------------------------------------------------
 // Tool UIs — registered via makeAssistantToolUI and rendered inside Thread
@@ -63,6 +71,86 @@ const SearchArchivesToolUI = makeAssistantToolUI<
 });
 
 // ---------------------------------------------------------------------------
+// Order confirmation tool UIs
+// ---------------------------------------------------------------------------
+
+const CreateArchiveOrderToolUI = makeAssistantToolUI<
+  Record<string, unknown>,
+  OrderConfirmationOutput | null
+>({
+  toolName: "create_archive_order",
+  render: ({ result }) => {
+    if (!result) {
+      return (
+        <div className="flex items-center gap-2 text-xs text-gray-500 py-1">
+          <span className="animate-spin">⟳</span> Creating archive order…
+        </div>
+      );
+    }
+    return <OrderConfirmation output={result} orderType="archive" />;
+  },
+});
+
+const CreateTaskingOrderToolUI = makeAssistantToolUI<
+  Record<string, unknown>,
+  OrderConfirmationOutput | null
+>({
+  toolName: "create_tasking_order",
+  render: ({ result }) => {
+    if (!result) {
+      return (
+        <div className="flex items-center gap-2 text-xs text-gray-500 py-1">
+          <span className="animate-spin">⟳</span> Creating tasking order…
+        </div>
+      );
+    }
+    return <OrderConfirmation output={result} orderType="tasking" />;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Pricing tool UI
+// ---------------------------------------------------------------------------
+
+const GetPricingToolUI = makeAssistantToolUI<
+  Record<string, unknown>,
+  PricingOutput | null
+>({
+  toolName: "get_pricing",
+  render: ({ result }) => {
+    if (!result) {
+      return (
+        <div className="flex items-center gap-2 text-xs text-gray-500 py-1">
+          <span className="animate-spin">⟳</span> Fetching pricing…
+        </div>
+      );
+    }
+    return <PricingTable output={result} />;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Feasibility tool UI
+// ---------------------------------------------------------------------------
+
+const CheckFeasibilityToolUI = makeAssistantToolUI<
+  Record<string, unknown>,
+  FeasibilityOutput | null
+>({
+  toolName: "check_feasibility",
+  render: ({ result }) => {
+    if (!result) {
+      return (
+        <div className="flex items-center gap-2 text-xs text-gray-500 py-1">
+          <span className="animate-spin">⟳</span> Checking feasibility…
+        </div>
+      );
+    }
+    return <FeasibilityCard output={result} />;
+  },
+});
+
+// ---------------------------------------------------------------------------
 // API key banner
 // ---------------------------------------------------------------------------
 
@@ -107,6 +195,10 @@ function ChatPanelInner({ skyfiApiKey }: ChatPanelInnerProps) {
     <AssistantRuntimeProvider runtime={runtime}>
       {/* Register tool UIs — must be inside AssistantRuntimeProvider */}
       <SearchArchivesToolUI />
+      <CreateArchiveOrderToolUI />
+      <CreateTaskingOrderToolUI />
+      <GetPricingToolUI />
+      <CheckFeasibilityToolUI />
       <Thread />
     </AssistantRuntimeProvider>
   );

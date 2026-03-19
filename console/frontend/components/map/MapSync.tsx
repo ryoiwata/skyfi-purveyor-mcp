@@ -78,6 +78,12 @@ function getMapActions(tool: string, output: unknown): MapAction[] {
       return [];
     }
 
+    case "create_archive_order":
+    case "create_tasking_order": {
+      // Flash the AOI to signal an order is being placed
+      return [{ type: "FLASH_AOI" }];
+    }
+
     default:
       return [];
   }

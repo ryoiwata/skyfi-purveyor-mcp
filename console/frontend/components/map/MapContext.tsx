@@ -25,7 +25,8 @@ export type MapAction =
   | { type: "CLEAR_AOI" }
   | { type: "PLOT_ARCHIVES"; archives: ArchiveResult[] }
   | { type: "HIGHLIGHT_ARCHIVE"; archiveId: string }
-  | { type: "CLEAR_ARCHIVES" };
+  | { type: "CLEAR_ARCHIVES" }
+  | { type: "FLASH_AOI" };
 
 // ---------------------------------------------------------------------------
 // Context value
@@ -389,6 +390,35 @@ export function MapContextProvider({ children }: { children: ReactNode }) {
         safeRemoveSource(map, "archives-points");
         safeRemoveSource(map, "archives");
         archiveCoordsRef.current.clear();
+        break;
+      }
+
+      case "FLASH_AOI": {
+        if (!map.getLayer("aoi-line")) break;
+        // Flash AOI border 3 times to indicate order placement
+        let tick = 0;
+        const interval = setInterval(() => {
+          if (map.getLayer("aoi-line")) {
+            map.setPaintProperty(
+              "aoi-line",
+              "line-opacity",
+              tick % 2 === 0 ? 0.1 : 1
+            );
+            map.setPaintProperty(
+              "aoi-line",
+              "line-width",
+              tick % 2 === 0 ? 2 : 4
+            );
+          }
+          tick++;
+          if (tick >= 6) {
+            clearInterval(interval);
+            if (map.getLayer("aoi-line")) {
+              map.setPaintProperty("aoi-line", "line-opacity", 1);
+              map.setPaintProperty("aoi-line", "line-width", 2);
+            }
+          }
+        }, 300);
         break;
       }
     }
