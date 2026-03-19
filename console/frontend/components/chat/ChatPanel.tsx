@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { AssistantRuntimeProvider, Thread, makeAssistantToolUI } from "@assistant-ui/react";
 import { usePurveyorRuntime } from "@/lib/runtime";
+import { useAppSettings } from "@/lib/app-settings-context";
 import { ArchiveResultCard } from "@/components/tools/ArchiveResultCard";
 import { OrderConfirmation } from "@/components/tools/OrderConfirmation";
 import { PricingTable } from "@/components/tools/PricingTable";
@@ -152,15 +153,13 @@ const CheckFeasibilityToolUI = makeAssistantToolUI<
 });
 
 // ---------------------------------------------------------------------------
-// API key banner
+// API key banner (shown when no key is set)
 // ---------------------------------------------------------------------------
 
-interface ApiKeyBannerProps {
-  onSave: (key: string) => void;
-}
-
-function ApiKeyBanner({ onSave }: ApiKeyBannerProps) {
+function ApiKeyBanner() {
+  const { setApiKey } = useAppSettings();
   const [value, setValue] = useState("");
+
   return (
     <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border-b border-amber-200 text-sm">
       <span className="text-amber-700 font-medium shrink-0">SkyFi API Key:</span>
@@ -168,12 +167,12 @@ function ApiKeyBanner({ onSave }: ApiKeyBannerProps) {
         type="password"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && value && onSave(value)}
+        onKeyDown={(e) => e.key === "Enter" && value && setApiKey(value)}
         placeholder="Enter your API key…"
         className="flex-1 min-w-0 px-2 py-1 border border-amber-300 rounded text-xs bg-white focus:outline-none focus:ring-1 focus:ring-amber-400"
       />
       <button
-        onClick={() => value && onSave(value)}
+        onClick={() => value && setApiKey(value)}
         className="shrink-0 px-2 py-1 text-xs bg-amber-500 text-white rounded hover:bg-amber-600 transition-colors"
       >
         Save
@@ -212,22 +211,16 @@ function ChatPanelInner({ skyfiApiKey }: ChatPanelInnerProps) {
 // ---------------------------------------------------------------------------
 
 export function ChatPanel() {
-  const [, setSkyfiApiKey] = useState("");
-  const [savedKey, setSavedKey] = useState("");
-
-  function handleSave(key: string) {
-    setSavedKey(key);
-    setSkyfiApiKey(key);
-  }
+  const { apiKey, setApiKey, conversationKey } = useAppSettings();
 
   return (
     <div className="flex flex-col h-full">
-      {!savedKey && <ApiKeyBanner onSave={handleSave} />}
-      {savedKey && (
+      {!apiKey && <ApiKeyBanner />}
+      {apiKey && (
         <div className="flex items-center justify-between px-3 py-1.5 bg-green-50 border-b border-green-200 text-xs text-green-700">
           <span>API key set ✓</span>
           <button
-            onClick={() => { setSavedKey(""); setSkyfiApiKey(""); }}
+            onClick={() => setApiKey("")}
             className="text-green-600 underline hover:text-green-800"
           >
             Change
@@ -235,7 +228,8 @@ export function ChatPanel() {
         </div>
       )}
       <div className="flex-1 overflow-hidden">
-        <ChatPanelInner skyfiApiKey={savedKey} />
+        {/* key prop resets the runtime when conversation is cleared */}
+        <ChatPanelInner key={conversationKey} skyfiApiKey={apiKey} />
       </div>
     </div>
   );

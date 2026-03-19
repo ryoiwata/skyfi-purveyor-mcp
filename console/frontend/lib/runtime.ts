@@ -10,6 +10,7 @@ import {
 } from "@assistant-ui/react";
 import { streamChat } from "@/lib/sse-client";
 import { toolResultEmitter } from "@/lib/tool-emitter";
+import { mcpCallsEmitter } from "@/lib/mcp-calls-context";
 import type { BackendMessage } from "@/types/sse-events";
 
 /**
@@ -99,6 +100,8 @@ export function usePurveyorRuntime(skyfiApiKey: string) {
             const queue = pendingCalls.get(event.tool) ?? [];
             queue.push(toolCallId);
             pendingCalls.set(event.tool, queue);
+            // Emit to MCP calls inspector
+            mcpCallsEmitter.emit({ type: "call", id: toolCallId, tool: event.tool, input: event.input });
             yield { content: [...contentItems] };
           } else if (event.type === "tool_result") {
             // Match result to the oldest pending call for this tool
@@ -111,8 +114,10 @@ export function usePurveyorRuntime(skyfiApiKey: string) {
                 ...existing,
                 result: event.output,
               } as ToolCallContentPart;
+              // Emit result to MCP calls inspector
+              mcpCallsEmitter.emit({ type: "result", id: callId, output: event.output });
             }
-            // Forward to map and future inspector
+            // Forward to map and status bar
             toolResultEmitter.emit({ tool: event.tool, output: event.output });
             yield { content: [...contentItems] };
           } else if (event.type === "error") {
